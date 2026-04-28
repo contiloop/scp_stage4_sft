@@ -1,0 +1,6 @@
+{
+  "prompts": {
+    "version": "teacher_correction_v1",
+    "preserve_source_in_parentheses": false
+  }
+}

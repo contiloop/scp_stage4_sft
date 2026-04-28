@@ -1,0 +1,6 @@
+{
+  "run": {
+    "run_id": "local_contract",
+    "seed": 42
+  }
+}

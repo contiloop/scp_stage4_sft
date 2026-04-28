@@ -1,0 +1,34 @@
+{
+  "logging": {
+    "report_to": ["wandb"],
+    "run_name": null,
+    "required_event_fields": ["run_id", "subset_idx", "phase", "config_hash"],
+    "local": {
+      "enabled": true,
+      "root_dir": "artifacts/runs",
+      "write_effective_config": true,
+      "write_config_hash": true,
+      "events_jsonl": "events.jsonl",
+      "metrics_jsonl": "metrics.jsonl",
+      "failures_jsonl": "failures.jsonl"
+    },
+    "wandb": {
+      "enabled": true,
+      "project": "scp_main",
+      "entity": null,
+      "tags": ["scp", "stage4", "sft", "en-ko"],
+      "notes": "",
+      "log_artifacts": true,
+      "log_model_checkpoints": false
+    },
+    "weave": {
+      "enabled": true,
+      "project": "scp_main",
+      "print_call_link": false,
+      "implicitly_patch_integrations": true,
+      "trace_external_api": true,
+      "trace_qe_subprocess": false,
+      "redact_inputs": false
+    }
+  }
+}

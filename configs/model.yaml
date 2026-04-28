@@ -1,0 +1,13 @@
+{
+  "model": {
+    "name": "alwaysgood/qwen35-it",
+    "max_length": 8192,
+    "max_seq_length": null,
+    "dtype": "bf16",
+    "attention_impl": "flash_attention_2",
+    "padding_side": "right",
+    "eos_token": null,
+    "chat_template": null,
+    "trust_remote_code": false
+  }
+}

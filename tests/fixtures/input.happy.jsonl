@@ -1,0 +1,2 @@
+{"id":"sample_000001","dataset":"alwaysgood/reuter_processed","source":"The company reported stronger quarterly revenue.","metadata":{"title":"Revenue Beat Expectations","document_type":"article","text_role":"body","original_id":"reuter_1","parent_id":null,"chunk_idx":null}}
+{"id":"sample_000002","dataset":"alwaysgood/reuter_processed","source":"Operating margins improved after cost controls.","metadata":{"title":"Margin Expansion Continues","document_type":"article","text_role":"body","original_id":"reuter_2","parent_id":null,"chunk_idx":null}}

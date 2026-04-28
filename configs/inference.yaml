@@ -1,0 +1,27 @@
+{
+  "inference": {
+    "q1": {
+      "do_sample": true,
+      "temperature": 1.1,
+      "top_p": 0.95,
+      "max_new_tokens": 4096,
+      "on_truncation": "discard"
+    },
+    "q2": {
+      "do_sample": false,
+      "temperature": 0.0,
+      "top_p": null,
+      "max_new_tokens": 4096,
+      "on_truncation": "discard"
+    },
+    "throughput": {
+      "batching": {
+        "strategy": "token_budget",
+        "max_batch_tokens": 32768,
+        "pad_to_multiple_of": 8
+      },
+      "preserve_order": false,
+      "restore_order_in_artifacts": true
+    }
+  }
+}

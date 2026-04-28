@@ -4,5 +4,7 @@ __pycache__/
 .pytest_cache/
 .ruff_cache/
 artifacts/
+!src/scp_stage4/artifacts/
+!src/scp_stage4/artifacts/*.py
 outputs/
 multirun/

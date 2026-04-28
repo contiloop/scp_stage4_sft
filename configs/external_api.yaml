@@ -1,0 +1,30 @@
+{
+  "external_api": {
+    "routing": {
+      "mode": "single",
+      "fallback_enabled": false,
+      "ensemble_enabled": false
+    },
+    "primary": {
+      "provider": "openai",
+      "model": "gpt-5.4",
+      "api_key_env": "OPENAI_API_KEY"
+    },
+    "providers": {
+      "openai": {"enabled": true, "api_key_env": "OPENAI_API_KEY"},
+      "gemini": {"enabled": false, "api_key_env": "GEMINI_API_KEY"},
+      "claude": {"enabled": false, "api_key_env": "ANTHROPIC_API_KEY"},
+      "qwen": {"enabled": false, "api_key_env": "QWEN_API_KEY"},
+      "deepseek": {"enabled": false, "api_key_env": "DEEPSEEK_API_KEY"}
+    },
+    "failure": {
+      "retry": 2,
+      "on_error": "skip",
+      "max_failure_rate": 0.2,
+      "on_failure_rate_exceeded": "fail"
+    },
+    "output_status": {
+      "allowed": ["ok", "skipped", "failed", "filtered", "needs_review"]
+    }
+  }
+}

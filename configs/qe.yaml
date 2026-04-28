@@ -1,0 +1,28 @@
+{
+  "qe": {
+    "epsilon": 1e-06,
+    "primary": {
+      "backend": "metricx24",
+      "model_name": "google/metricx-24-hybrid-xxl-v2p6-bfloat16",
+      "tokenizer_name": "google/mt5-xl",
+      "batch_size": 8,
+      "max_input_length": 1536,
+      "score_direction": "lower_is_better"
+    },
+    "scoring": {
+      "selection": {
+        "default_rule": {
+          "require_score_s_gte": 0.0,
+          "top_fraction": 0.1
+        }
+      }
+    },
+    "isolation": {
+      "enabled": true,
+      "env": {
+        "comet_python_env": "COMET_PYTHON",
+        "metricx_python_env": "METRICX_PYTHON"
+      }
+    }
+  }
+}

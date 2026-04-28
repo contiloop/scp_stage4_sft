@@ -97,6 +97,13 @@ def _optional_status(data: Mapping[str, Any], key: str, *, context: str) -> Stat
     return value  # type: ignore[return-value]
 
 
+def _require_status(data: Mapping[str, Any], key: str, *, context: str) -> StatusValue:
+    value = _require_str(data, key, context=context)
+    if value not in _STATUS_VALUES:
+        raise SchemaValidationError(f"{context}.{key} must be one of {_STATUS_VALUES}")
+    return value  # type: ignore[return-value]
+
+
 def _require_text_role(data: Mapping[str, Any], key: str, *, context: str) -> TextRole:
     value = _require_str(data, key, context=context)
     if value not in _TEXT_ROLES:
@@ -398,7 +405,7 @@ class ApiRequestRow:
     metadata: RowMetadata
     request_id: str
     student: str
-    status: StatusValue | None = None
+    status: StatusValue
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> "ApiRequestRow":
@@ -415,7 +422,7 @@ class ApiRequestRow:
             metadata=RowMetadata.from_dict(_ensure_mapping(_require_key(data, "metadata", context="api_requests"), context="metadata")),
             request_id=_require_str(data, "request_id", context="api_requests"),
             student=_require_str(data, "student", context="api_requests"),
-            status=_optional_status(data, "status", context="api_requests"),
+            status=_require_status(data, "status", context="api_requests"),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -448,9 +455,7 @@ class ApiRow:
             allowed={"id", "dataset", "source", "metadata", "request_id", "gold", "status"},
             context="api",
         )
-        status = _require_str(data, "status", context="api")
-        if status not in _STATUS_VALUES:
-            raise SchemaValidationError(f"api.status must be one of {_STATUS_VALUES}")
+        status = _require_status(data, "status", context="api")
         return cls(
             id=_require_str(data, "id", context="api"),
             dataset=_require_str(data, "dataset", context="api"),
@@ -458,7 +463,7 @@ class ApiRow:
             metadata=RowMetadata.from_dict(_ensure_mapping(_require_key(data, "metadata", context="api"), context="metadata")),
             request_id=_require_str(data, "request_id", context="api"),
             gold=_require_str(data, "gold", context="api"),
-            status=status,  # type: ignore[arg-type]
+            status=status,
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -530,4 +535,3 @@ def validate_artifact_rows(
     rows: Iterable[Mapping[str, Any]], artifact: ArtifactName
 ) -> list[dict[str, Any]]:
     return [validate_artifact_row(row, artifact) for row in rows]
-

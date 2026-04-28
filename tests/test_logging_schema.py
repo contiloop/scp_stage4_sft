@@ -13,6 +13,7 @@ if str(SRC) not in sys.path:
 
 from scp_stage4.artifacts.config_artifacts import compute_config_hash, persist_effective_config_artifacts
 from scp_stage4.logging.local import LocalJsonlLogger
+from scp_stage4.logging import local as local_logging_module
 from scp_stage4.logging.schema import RequiredLogContext, build_event_record, build_failure_record
 
 
@@ -69,6 +70,9 @@ def test_missing_required_fields_fail() -> None:
 
     with pytest.raises(ValueError):
         RequiredLogContext(run_id="run_abc", subset_idx=0, phase="score", config_hash="")
+
+    with pytest.raises(ValueError):
+        RequiredLogContext(run_id="run_abc", subset_idx=-1, phase="score", config_hash="hash")
 
     context = RequiredLogContext(run_id="run_abc", subset_idx=0, phase="score", config_hash="hash")
     with pytest.raises(ValueError):
@@ -168,3 +172,13 @@ def test_local_logger_writes_run_and_subset_jsonl(tmp_path: Path) -> None:
     assert run_event["subset_idx"] == 2
     assert run_failure["row_id"] == "row_001"
     assert "[REDACTED]" in run_failure["error"]
+
+
+def test_append_jsonl_record_works_without_fcntl(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(local_logging_module, "fcntl", None)
+    out_path = tmp_path / "events.jsonl"
+    local_logging_module.append_jsonl_record(out_path, {"hello": "world"})
+    assert out_path.exists()
+    lines = out_path.read_text(encoding="utf-8").strip().splitlines()
+    assert len(lines) == 1
+    assert json.loads(lines[0])["hello"] == "world"

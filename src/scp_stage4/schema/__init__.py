@@ -13,6 +13,7 @@ from .data_contracts import (
     validate_artifact_rows,
 )
 from .errors import SchemaValidationError
+from .qe_isolation_contracts import QeIsolationRequest, QeIsolationResponse
 
 __all__ = [
     "ApiRequestRow",
@@ -21,6 +22,8 @@ __all__ = [
     "NormalizedDatapoolRow",
     "Q1Row",
     "Q2Row",
+    "QeIsolationRequest",
+    "QeIsolationResponse",
     "RowMetadata",
     "SchemaValidationError",
     "ScoredRow",
@@ -29,4 +32,3 @@ __all__ = [
     "validate_artifact_row",
     "validate_artifact_rows",
 ]
-

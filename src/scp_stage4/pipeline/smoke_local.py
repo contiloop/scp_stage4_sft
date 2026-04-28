@@ -3,14 +3,15 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import random
 from pathlib import Path
 from typing import Any
 
-from scp_stage4.config.loader import compose_config, save_effective_config
+from scp_stage4.artifacts import compute_config_hash, persist_effective_config_artifacts
+from scp_stage4.config.loader import compose_config
 from scp_stage4.config.validator import validate_config
+from scp_stage4.logging import LocalJsonlLogger, RequiredLogContext
 from scp_stage4.pipeline.io_utils import iter_jsonl, write_jsonl
 
 
@@ -25,26 +26,6 @@ def _get_by_dotpath(cfg: dict[str, Any], key: str, default: Any = None) -> Any:
             return default
         cursor = cursor[part]
     return cursor
-
-
-def _redact_secrets(value: Any) -> Any:
-    if isinstance(value, dict):
-        out: dict[str, Any] = {}
-        for key, sub in value.items():
-            lowered = key.lower()
-            if "api_key" in lowered or "token" in lowered or "secret" in lowered:
-                out[key] = "REDACTED"
-            else:
-                out[key] = _redact_secrets(sub)
-        return out
-    if isinstance(value, list):
-        return [_redact_secrets(item) for item in value]
-    return value
-
-
-def _config_hash(cfg: dict[str, Any]) -> str:
-    blob = json.dumps(_redact_secrets(cfg), sort_keys=True, ensure_ascii=True)
-    return hashlib.sha256(blob.encode("utf-8")).hexdigest()
 
 
 def _load_fixture_rows() -> list[dict[str, Any]]:
@@ -106,13 +87,21 @@ def _select_subset(
     return shuffled[:subset_size]
 
 
-def _build_q_rows(input_rows: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+def _build_q_rows(
+    input_rows: list[dict[str, Any]],
+    score_direction: str,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     q1_rows: list[dict[str, Any]] = []
     q2_rows: list[dict[str, Any]] = []
     for idx, row in enumerate(input_rows):
         qe_q1 = round(0.90 - (idx % 5) * 0.07, 6)
         collapse_drop = round(0.03 + (idx % 4) * 0.04, 6)
-        qe_q2 = round(max(0.0, qe_q1 - collapse_drop), 6)
+        if score_direction == "lower_is_better":
+            # For error-oriented QE (lower is better), larger Q2 means collapse.
+            qe_q2 = round(qe_q1 + collapse_drop, 6)
+        else:
+            # For quality-oriented QE (higher is better), smaller Q2 means collapse.
+            qe_q2 = round(max(0.0, qe_q1 - collapse_drop), 6)
 
         q1_row = dict(row)
         q1_row["mt_q1"] = f"KO_Q1::{row['id']}"
@@ -128,10 +117,21 @@ def _build_q_rows(input_rows: list[dict[str, Any]]) -> tuple[list[dict[str, Any]
     return q1_rows, q2_rows
 
 
-def _score_rows(q2_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _to_quality_score(raw_score: float, score_direction: str) -> float:
+    if score_direction == "lower_is_better":
+        return -raw_score
+    return raw_score
+
+
+def _score_rows(
+    q2_rows: list[dict[str, Any]],
+    score_direction: str,
+) -> list[dict[str, Any]]:
     scored: list[dict[str, Any]] = []
     for row in q2_rows:
-        score_s = round(float(row["qe_q1"]) - float(row["qe_q2"]), 6)
+        q1_quality = _to_quality_score(float(row["qe_q1"]), score_direction)
+        q2_quality = _to_quality_score(float(row["qe_q2"]), score_direction)
+        score_s = round(q1_quality - q2_quality, 6)
         scored_row = dict(row)
         scored_row["score_s"] = score_s
         scored.append(scored_row)
@@ -147,7 +147,10 @@ def _select_fragile(scored_rows: list[dict[str, Any]], cfg: dict[str, Any]) -> l
     )
 
     eligible = [row for row in scored_rows if float(row["score_s"]) >= threshold]
-    eligible_sorted = sorted(eligible, key=lambda r: (float(r["score_s"]), r["id"]), reverse=True)
+    eligible_sorted = sorted(
+        eligible,
+        key=lambda r: (-float(r["score_s"]), str(r["id"])),
+    )
 
     keep = max(1, int(len(scored_rows) * top_fraction + 0.999999))
     selected_ranked = eligible_sorted[: min(keep, len(eligible_sorted))]
@@ -250,16 +253,32 @@ def run_smoke(
     subset_root = run_root / "subsets" / "subset_000"
     subset_root.mkdir(parents=True, exist_ok=True)
 
-    cfg_hash = _config_hash(cfg)
-    if bool(_get_by_dotpath(cfg, "logging.local.write_effective_config", True)):
-        save_effective_config(cfg, run_root / "effective_config.yaml")
-    if bool(_get_by_dotpath(cfg, "logging.local.write_config_hash", True)):
-        (run_root / "config_hash.txt").write_text(cfg_hash + "\n", encoding="utf-8")
+    cfg_hash = compute_config_hash(cfg)
+    persisted = persist_effective_config_artifacts(
+        run_dir=run_root,
+        effective_config=cfg,
+        write_effective_config=bool(
+            _get_by_dotpath(cfg, "logging.local.write_effective_config", True)
+        ),
+        write_config_hash=bool(
+            _get_by_dotpath(cfg, "logging.local.write_config_hash", True)
+        ),
+    )
+    if str(persisted["config_hash"]) != cfg_hash:
+        raise SmokeValidationError("config_hash mismatch between stable hash and artifact hash")
+
+    score_direction = str(
+        _get_by_dotpath(cfg, "qe.primary.score_direction", "higher_is_better")
+    )
+    if score_direction not in {"higher_is_better", "lower_is_better"}:
+        raise SmokeValidationError(
+            "qe.primary.score_direction must be 'higher_is_better' or 'lower_is_better'"
+        )
 
     pool_rows = _load_fixture_rows()
     input_rows = _select_subset(pool_rows, cfg, subset_size_override)
-    q1_rows, q2_rows = _build_q_rows(input_rows)
-    scored_rows = _score_rows(q2_rows)
+    q1_rows, q2_rows = _build_q_rows(input_rows, score_direction)
+    scored_rows = _score_rows(q2_rows, score_direction)
     selected_rows = _select_fragile(scored_rows, cfg)
     api_requests, api_rows = _make_api_artifacts(selected_rows, run_id)
     train_rows = [
@@ -294,25 +313,38 @@ def run_smoke(
     write_jsonl(subset_root / "api.jsonl", api_rows)
     write_jsonl(subset_root / "train_final" / "train_rows.jsonl", train_rows)
 
-    events = [
-        {
-            "run_id": run_id,
-            "subset_idx": 0,
-            "phase": phase,
-            "config_hash": cfg_hash,
-            "event_type": "phase_completed",
-            "status": "ok",
-        }
-        for phase in (
-            "infer-q1",
-            "train-collapse-lora",
-            "infer-q2",
-            "score",
-            "call-api",
-            "update-base",
+    local_cfg = _get_by_dotpath(cfg, "logging.local", {})
+    events_name = str(local_cfg.get("events_jsonl", "events.jsonl"))
+    metrics_name = str(local_cfg.get("metrics_jsonl", "metrics.jsonl"))
+    failures_name = str(local_cfg.get("failures_jsonl", "failures.jsonl"))
+    logger = LocalJsonlLogger(
+        run_root,
+        events_name=events_name,
+        metrics_name=metrics_name,
+        failures_name=failures_name,
+    )
+
+    phase_artifacts = (
+        ("infer-q1", "subsets/subset_000/q1.jsonl"),
+        ("train-collapse-lora", "subsets/subset_000/train_final"),
+        ("infer-q2", "subsets/subset_000/q2.jsonl"),
+        ("score", "subsets/subset_000/scored.jsonl"),
+        ("call-api", "subsets/subset_000/api.jsonl"),
+        ("update-base", "subsets/subset_000/train_final/train_rows.jsonl"),
+    )
+    for phase, artifact_path in phase_artifacts:
+        context = RequiredLogContext(
+            run_id=run_id,
+            subset_idx=0,
+            phase=phase,
+            config_hash=cfg_hash,
         )
-    ]
-    write_jsonl(run_root / "events.jsonl", events)
+        logger.log_event(
+            context=context,
+            event_type="phase_completed",
+            status="ok",
+            artifact_path=artifact_path,
+        )
 
     summary = {
         "run_id": run_id,
@@ -329,8 +361,30 @@ def run_smoke(
             "train": len(train_rows),
         },
     }
+    logger.log_metrics(
+        context=RequiredLogContext(
+            run_id=run_id,
+            subset_idx=0,
+            phase="smoke-local",
+            config_hash=cfg_hash,
+        ),
+        metrics={
+            "subset/input_rows": len(input_rows),
+            "subset/q1_rows": len(q1_rows),
+            "subset/q2_rows": len(q2_rows),
+            "subset/scored_rows": len(scored_rows),
+            "subset/selected_rows": len(selected_rows),
+            "subset/api_ok_rows": len(api_rows),
+            "subset/train_rows": len(train_rows),
+        },
+        metric_group="subset",
+    )
+    # Ensure failures layout exists even in all-success smoke runs.
+    (run_root / failures_name).touch(exist_ok=True)
+    (subset_root / failures_name).touch(exist_ok=True)
+
     (run_root / "smoke_summary.json").write_text(
-        json.dumps(summary, ensure_ascii=True, indent=2, sort_keys=True) + "\n",
+        json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
     return summary
@@ -349,7 +403,7 @@ def main(argv: list[str] | None = None) -> int:
         run_id_override=args.run_id,
         subset_size_override=args.subset_size,
     )
-    print(json.dumps(summary, ensure_ascii=True, sort_keys=True))
+    print(json.dumps(summary, ensure_ascii=False, sort_keys=True))
     return 0
 
 

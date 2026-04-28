@@ -158,7 +158,108 @@ def compose_config(
     return composed
 
 
+def _looks_like_number(text: str) -> bool:
+    try:
+        float(text)
+    except ValueError:
+        return False
+    return True
+
+
+def _yaml_quote_string(value: str) -> str:
+    if value == "":
+        return "''"
+
+    lowered = value.lower()
+    if lowered in {"null", "~", "true", "false"}:
+        return json.dumps(value, ensure_ascii=False)
+    if _looks_like_number(value):
+        return json.dumps(value, ensure_ascii=False)
+
+    special_chars = set(":#{}[]&*?!|>%'\"`")
+    if (
+        value.strip() != value
+        or any(ch in special_chars for ch in value)
+        or value.startswith(("-", "@", "`", " "))
+        or "\n" in value
+        or "\r" in value
+        or "\t" in value
+    ):
+        return json.dumps(value, ensure_ascii=False)
+
+    return value
+
+
+def _yaml_scalar(value: Any) -> str:
+    if value is None:
+        return "null"
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (int, float)):
+        return str(value)
+    if isinstance(value, str):
+        return _yaml_quote_string(value)
+    return json.dumps(value, ensure_ascii=False)
+
+
+def _render_yaml_lines(value: Any, indent: int = 0) -> list[str]:
+    prefix = " " * indent
+
+    if isinstance(value, dict):
+        if not value:
+            return [f"{prefix}{{}}"]
+
+        lines: list[str] = []
+        for key, item in value.items():
+            key_text = _yaml_quote_string(str(key))
+            if isinstance(item, (dict, list)):
+                if isinstance(item, dict) and not item:
+                    lines.append(f"{prefix}{key_text}: {{}}")
+                elif isinstance(item, list) and not item:
+                    lines.append(f"{prefix}{key_text}: []")
+                else:
+                    lines.append(f"{prefix}{key_text}:")
+                    lines.extend(_render_yaml_lines(item, indent + 2))
+            else:
+                lines.append(f"{prefix}{key_text}: {_yaml_scalar(item)}")
+        return lines
+
+    if isinstance(value, list):
+        if not value:
+            return [f"{prefix}[]"]
+
+        lines = []
+        for item in value:
+            if isinstance(item, (dict, list)):
+                if isinstance(item, dict) and not item:
+                    lines.append(f"{prefix}- {{}}")
+                elif isinstance(item, list) and not item:
+                    lines.append(f"{prefix}- []")
+                else:
+                    lines.append(f"{prefix}-")
+                    lines.extend(_render_yaml_lines(item, indent + 2))
+            else:
+                lines.append(f"{prefix}- {_yaml_scalar(item)}")
+        return lines
+
+    return [f"{prefix}{_yaml_scalar(value)}"]
+
+
+def _serialize_as_yaml_text(value: Any) -> str:
+    try:
+        import yaml  # type: ignore
+
+        return yaml.safe_dump(
+            value,
+            sort_keys=False,
+            allow_unicode=True,
+            default_flow_style=False,
+        )
+    except ModuleNotFoundError:
+        return "\n".join(_render_yaml_lines(value)) + "\n"
+
+
 def save_effective_config(cfg: dict[str, Any], output_path: str | Path) -> None:
     path = Path(output_path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(cfg, ensure_ascii=True, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    path.write_text(_serialize_as_yaml_text(cfg), encoding="utf-8")

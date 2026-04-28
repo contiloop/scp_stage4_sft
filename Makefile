@@ -8,7 +8,9 @@ CONFIG ?= configs/scp_stage4.yaml
 RUN_ID ?= local_contract
 
 .PHONY: set validate-config validate-jsonl validate-local test-local smoke-local \
-	validate-remote-env smoke-remote-qe smoke-remote-model smoke-remote-api dry-run-remote-subset
+	validate-remote-env smoke-remote-qe smoke-remote-model smoke-remote-api dry-run-remote-subset \
+	prepare-data run-subset run-stage eval eval-ood \
+	infer-q1 train-collapse-lora infer-q2 score call-api update-base
 
 # Target: set
 # required config keys: none
@@ -42,7 +44,7 @@ validate-config:
 # runtime: local CPU only (hooks optional Data/Schema validator when available)
 # exit behavior: 0 if JSONL/schema contract passes; non-zero on malformed JSONL/schema mismatch
 validate-jsonl:
-	@PYTHONPATH=$(PYTHONPATH) $(PY) -m scp_stage4.pipeline.validate_jsonl --config $(CONFIG) --run-id $(RUN_ID)
+	@PYTHONPATH=$(PYTHONPATH) $(PY) -m scp_stage4.schema.validate_jsonl --config $(CONFIG) --run-id $(RUN_ID)
 
 # Target: validate-local
 # required config keys: same as validate-config + validate-jsonl requirements
@@ -71,6 +73,106 @@ test-local:
 # exit behavior: 0 on successful contract flow; non-zero on row-id drift/missing artifact/schema mismatch
 smoke-local:
 	@PYTHONPATH=$(PYTHONPATH) $(PY) -m scp_stage4.pipeline.smoke_local --config $(CONFIG) --run-id $(RUN_ID)
+
+# Target: prepare-data
+# required config keys: data.*, pipeline.subset.*, run.run_id
+# input artifacts: tests/fixtures/*.jsonl (for local harness)
+# output artifacts: artifacts/data/ placeholder contract files
+# runtime: local CPU only, mocked behavior
+# exit behavior: 0 on deterministic contract artifact readiness; non-zero on config/IO failures
+prepare-data: validate-config
+	@mkdir -p artifacts/data
+	@touch artifacts/data/datapool.train.sampled.jsonl
+	@echo "prepare-data: contract-ready"
+
+# Target: infer-q1
+# required config keys: inference.q1.*, model.*, run.run_id
+# input artifacts: subset input rows
+# output artifacts: subsets/subset_000/q1.jsonl (mocked)
+# runtime: local CPU only, mocked generation
+# exit behavior: 0 on deterministic mocked output path readiness; non-zero on contract failure
+infer-q1:
+	@echo "infer-q1: mocked in smoke-local (no real model inference)"
+
+# Target: train-collapse-lora
+# required config keys: training.collapse_lora.*, training.backend
+# input artifacts: subsets/subset_000/q1.jsonl
+# output artifacts: subsets/subset_000/train_final/ (mocked marker)
+# runtime: local CPU only, mocked training
+# exit behavior: 0 on mocked contract pass; non-zero on contract failure
+train-collapse-lora:
+	@echo "train-collapse-lora: mocked in smoke-local (no real training)"
+
+# Target: infer-q2
+# required config keys: inference.q2.*, training.collapse_lora.*
+# input artifacts: subsets/subset_000/q1.jsonl
+# output artifacts: subsets/subset_000/q2.jsonl (mocked)
+# runtime: local CPU only, mocked generation
+# exit behavior: 0 on deterministic mocked output path readiness; non-zero on contract failure
+infer-q2:
+	@echo "infer-q2: mocked in smoke-local (no real collapse adapter inference)"
+
+# Target: score
+# required config keys: qe.*, pipeline.subset.*
+# input artifacts: subsets/subset_000/q1.jsonl, q2.jsonl
+# output artifacts: subsets/subset_000/scored.jsonl, selected.jsonl (mocked)
+# runtime: local CPU only, mocked QE scoring
+# exit behavior: 0 on deterministic mocked scoring pass; non-zero on contract failure
+score:
+	@echo "score: mocked in smoke-local (no real QE subprocess)"
+
+# Target: call-api
+# required config keys: external_api.*, logging.*
+# input artifacts: subsets/subset_000/selected.jsonl
+# output artifacts: subsets/subset_000/api_requests.jsonl, api.jsonl (mocked)
+# runtime: local CPU only, mocked external API behavior
+# exit behavior: 0 on deterministic mocked API contract pass; non-zero on contract failure
+call-api:
+	@echo "call-api: mocked in smoke-local (no real external API call)"
+
+# Target: update-base
+# required config keys: training.base_update.*, training.backend
+# input artifacts: subsets/subset_000/api.jsonl
+# output artifacts: subsets/subset_000/train_final/train_rows.jsonl (mocked)
+# runtime: local CPU only, mocked training update
+# exit behavior: 0 on deterministic mocked update pass; non-zero on contract failure
+update-base:
+	@echo "update-base: mocked in smoke-local (no real base model update)"
+
+# Target: run-subset
+# required config keys: full local harness config
+# input artifacts: configs + local fixtures
+# output artifacts: subset artifact chain under artifacts/runs/$(RUN_ID)
+# runtime: local CPU only, mocked end-to-end subset flow
+# exit behavior: 0 on full mocked subset contract pass; non-zero on any step contract failure
+run-subset: smoke-local
+
+# Target: run-stage
+# required config keys: full local harness config
+# input artifacts: configs + local fixtures
+# output artifacts: stage-level mocked outputs (single-subset foundation mode)
+# runtime: local CPU only, mocked stage flow
+# exit behavior: 0 on mocked stage contract pass; non-zero on any contract failure
+run-stage: run-subset
+	@echo "run-stage: foundation mode executes one mocked subset"
+
+# Target: eval
+# required config keys: pipeline.eval_after_subset.*, logging.*
+# input artifacts: mocked subset outputs
+# output artifacts: metrics JSONL entries (mocked)
+# runtime: local CPU only
+# exit behavior: 0 on mocked eval contract pass; non-zero on contract failure
+eval:
+	@echo "eval: mocked in foundation mode (no real metric runtime)"
+
+# Target: eval-ood
+# required config keys: pipeline.eval_after_subset.*, data.ood_test.*
+# input artifacts: mocked subset outputs + ood config
+# output artifacts: mocked OOD eval marker/logs
+# runtime: local CPU only
+# exit behavior: 0 on mocked OOD eval contract pass; non-zero on contract failure
+eval-ood:
+	@echo "eval-ood: mocked in foundation mode (no real reference-based evaluation)"
 
 # Target: validate-remote-env
 # required config keys: external_api.primary.api_key_env and full composed config validity

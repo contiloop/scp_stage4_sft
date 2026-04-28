@@ -14,7 +14,16 @@ _SECRET_KEY_PATTERN = re.compile(
     r"(^|_)(api_key|auth_token|access_token|refresh_token|token|secret|password|passphrase|private_key|access_key|authorization)($|_)",
     re.IGNORECASE,
 )
-_SECRET_EXACT_ALLOWLIST = {"api_key_env", "token_env", "secret_env", "password_env", "auth_env"}
+_SECRET_EXACT_ALLOWLIST = {
+    "api_key_env",
+    "token_env",
+    "secret_env",
+    "password_env",
+    "auth_env",
+    "eos_token",
+    "bos_token",
+    "pad_token",
+}
 _OPENAI_KEY_PATTERN = re.compile(r"\bsk-[A-Za-z0-9_-]{8,}\b")
 _BEARER_PATTERN = re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._\-~+/]+=*\b")
 
@@ -66,18 +75,102 @@ def _redact_config_node(value: Any, parent_key: str | None = None) -> Any:
 def compute_config_hash(effective_config: Mapping[str, Any] | Any) -> str:
     """Compute deterministic SHA256 hash from a secret-redacted config object."""
     redacted = redact_config_secrets(effective_config)
-    canonical = json.dumps(redacted, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    canonical = json.dumps(
+        redacted,
+        ensure_ascii=True,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _yaml_quote_string(value: str) -> str:
+    if value == "":
+        return "''"
+    lowered = value.lower()
+    if lowered in {"null", "~", "true", "false"}:
+        return json.dumps(value, ensure_ascii=False)
+    try:
+        float(value)
+        return json.dumps(value, ensure_ascii=False)
+    except ValueError:
+        pass
+
+    special_chars = set(":#{}[]&*?!|>%'\"`")
+    if (
+        value.strip() != value
+        or any(ch in special_chars for ch in value)
+        or value.startswith(("-", "@", "`", " "))
+        or "\n" in value
+        or "\r" in value
+        or "\t" in value
+    ):
+        return json.dumps(value, ensure_ascii=False)
+    return value
+
+
+def _yaml_scalar(value: Any) -> str:
+    if value is None:
+        return "null"
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (int, float)):
+        return str(value)
+    if isinstance(value, str):
+        return _yaml_quote_string(value)
+    return json.dumps(value, ensure_ascii=False)
+
+
+def _render_yaml_lines(value: Any, indent: int = 0) -> list[str]:
+    prefix = " " * indent
+    if isinstance(value, Mapping):
+        if not value:
+            return [f"{prefix}{{}}"]
+        lines: list[str] = []
+        for key, item in value.items():
+            key_text = _yaml_quote_string(str(key))
+            if isinstance(item, (Mapping, list)):
+                if isinstance(item, Mapping) and not item:
+                    lines.append(f"{prefix}{key_text}: {{}}")
+                elif isinstance(item, list) and not item:
+                    lines.append(f"{prefix}{key_text}: []")
+                else:
+                    lines.append(f"{prefix}{key_text}:")
+                    lines.extend(_render_yaml_lines(item, indent + 2))
+            else:
+                lines.append(f"{prefix}{key_text}: {_yaml_scalar(item)}")
+        return lines
+    if isinstance(value, list):
+        if not value:
+            return [f"{prefix}[]"]
+        lines: list[str] = []
+        for item in value:
+            if isinstance(item, (Mapping, list)):
+                if isinstance(item, Mapping) and not item:
+                    lines.append(f"{prefix}- {{}}")
+                elif isinstance(item, list) and not item:
+                    lines.append(f"{prefix}- []")
+                else:
+                    lines.append(f"{prefix}-")
+                    lines.extend(_render_yaml_lines(item, indent + 2))
+            else:
+                lines.append(f"{prefix}- {_yaml_scalar(item)}")
+        return lines
+    return [f"{prefix}{_yaml_scalar(value)}"]
 
 
 def _serialize_as_yaml_text(redacted_config: Any) -> str:
     try:
         import yaml  # type: ignore
 
-        return yaml.safe_dump(redacted_config, sort_keys=True, allow_unicode=True)
+        return yaml.safe_dump(
+            redacted_config,
+            sort_keys=False,
+            allow_unicode=True,
+            default_flow_style=False,
+        )
     except Exception:
-        # JSON is valid YAML 1.2 and keeps this helper dependency-light.
-        return json.dumps(redacted_config, ensure_ascii=False, indent=2, sort_keys=True)
+        return "\n".join(_render_yaml_lines(redacted_config)) + "\n"
 
 
 def persist_effective_config_artifacts(

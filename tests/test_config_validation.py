@@ -35,6 +35,25 @@ class ConfigValidationTests(unittest.TestCase):
         with self.assertRaises(ConfigValidationError):
             validate_config(cfg)
 
+    def test_length_overflow_policy_must_be_supported(self) -> None:
+        cfg = compose_config("configs/scp_stage4.yaml")
+        cfg["data"]["length"]["overflow"] = "invalid_mode"
+        with self.assertRaises(ConfigValidationError):
+            validate_config(cfg)
+
+    def test_fixed_size_strategy_requires_fixed_size_key(self) -> None:
+        cfg = compose_config("configs/scp_stage4.yaml")
+        cfg["pipeline"]["subset"]["strategy"] = "fixed_size"
+        cfg["pipeline"]["subset"].pop("fixed_size", None)
+        with self.assertRaises(ConfigValidationError):
+            validate_config(cfg)
+
+    def test_fixed_size_strategy_accepts_positive_integer(self) -> None:
+        cfg = compose_config("configs/scp_stage4.yaml")
+        cfg["pipeline"]["subset"]["strategy"] = "fixed_size"
+        cfg["pipeline"]["subset"]["fixed_size"] = 32
+        validate_config(cfg)
+
 
 if __name__ == "__main__":
     unittest.main()

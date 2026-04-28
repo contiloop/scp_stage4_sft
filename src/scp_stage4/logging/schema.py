@@ -70,8 +70,8 @@ def _require_non_empty_str(name: str, value: Any) -> str:
 def _require_subset_idx(value: Any) -> int:
     if not isinstance(value, int):
         raise ValueError("subset_idx is required and must be an integer")
-    if value < -1:
-        raise ValueError("subset_idx must be >= -1")
+    if value < 0:
+        raise ValueError("subset_idx must be >= 0")
     return value
 
 

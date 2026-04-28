@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -14,7 +15,22 @@ from scp_stage4.pipeline.smoke_local import run_smoke
 
 def _is_placeholder_model(model_name: str) -> bool:
     lowered = model_name.strip().lower()
-    return lowered in {"", "placeholder", "gpt-5.4"}
+    if lowered in {"", "placeholder", "configured-provider-model", "todo"}:
+        return True
+    if lowered.startswith("placeholder/"):
+        return True
+    if re.match(r"^gpt-5(?:$|[.-].*)", lowered):
+        return True
+    return False
+
+
+def _resolve_env_or_path(spec: str) -> tuple[str, str]:
+    value = spec.strip()
+    if not value:
+        return ("invalid", "")
+    if "/" in value:
+        return ("path", value)
+    return ("env", value)
 
 
 def cmd_validate_env(config_path: str, overrides: list[str]) -> int:
@@ -34,24 +50,35 @@ def cmd_smoke_qe(config_path: str, overrides: list[str]) -> int:
     validate_config(cfg)
 
     isolation_env = cfg.get("qe", {}).get("isolation", {}).get("env", {})
-    required = [
+    required_specs = [
         isolation_env.get("comet_python_env", "COMET_PYTHON"),
         isolation_env.get("metricx_python_env", "METRICX_PYTHON"),
     ]
 
-    missing = [name for name in required if not os.environ.get(str(name))]
-    if missing:
-        print(
-            "smoke-remote-qe: missing env vars: " + ", ".join(map(str, missing)),
-            file=sys.stderr,
-        )
-        return 1
+    for spec in required_specs:
+        mode, resolved = _resolve_env_or_path(str(spec))
+        if mode == "invalid":
+            print("smoke-remote-qe: invalid empty qe isolation spec", file=sys.stderr)
+            return 1
+        if mode == "path":
+            if not Path(resolved).exists():
+                print(
+                    f"smoke-remote-qe: configured path does not exist: {resolved}",
+                    file=sys.stderr,
+                )
+                return 1
+            continue
 
-    for env_name in required:
-        value = os.environ.get(str(env_name), "")
-        if value and not Path(value).exists():
+        env_value = os.environ.get(resolved, "")
+        if not env_value:
             print(
-                f"smoke-remote-qe: {env_name} points to missing path: {value}",
+                f"smoke-remote-qe: missing env var: {resolved}",
+                file=sys.stderr,
+            )
+            return 1
+        if not Path(env_value).exists():
+            print(
+                f"smoke-remote-qe: {resolved} points to missing path: {env_value}",
                 file=sys.stderr,
             )
             return 1

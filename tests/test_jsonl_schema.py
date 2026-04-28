@@ -16,6 +16,10 @@ from scp_stage4.data import (  # noqa: E402
     validate_row_id_preservation,
     write_jsonl,
 )
+from scp_stage4.pipeline.io_utils import (  # noqa: E402
+    read_jsonl as pipeline_read_jsonl,
+    write_jsonl as pipeline_write_jsonl,
+)
 from scp_stage4.schema import (  # noqa: E402
     SchemaValidationError,
     validate_artifact_row,
@@ -65,6 +69,24 @@ def test_schema_validation_fail() -> None:
     with pytest.raises(SchemaValidationError):
         validate_artifact_row(invalid_row, "input")
 
+    invalid_api_request = {
+        "id": "sample_000001",
+        "dataset": "alwaysgood/reuter_processed",
+        "source": "A valid English source",
+        "metadata": {
+            "title": "Revenue Beat Expectations",
+            "document_type": "article",
+            "text_role": "body",
+            "original_id": "reuter_1",
+            "parent_id": None,
+            "chunk_idx": None,
+        },
+        "request_id": "run_abc123/subsets/subset_000/sample_000001/api",
+        "student": "학생 번역",
+    }
+    with pytest.raises(SchemaValidationError):
+        validate_artifact_row(invalid_api_request, "api_requests")
+
 
 def test_jsonl_io_roundtrip(tmp_path: Path) -> None:
     input_rows = validate_artifact_rows(_fixture_rows("input.happy.jsonl"), "input")
@@ -78,6 +100,22 @@ def test_jsonl_io_roundtrip(tmp_path: Path) -> None:
 
     loaded = read_jsonl(output_path)
     assert loaded == input_rows
+
+
+def test_pipeline_jsonl_utf8_is_not_escaped(tmp_path: Path) -> None:
+    output_path = tmp_path / "utf8_pipeline.jsonl"
+    rows = [{"id": "row_1", "source": "한글 문장", "dataset": "fixture", "metadata": {"text_role": "body"}}]
+    pipeline_write_jsonl(output_path, rows)
+    raw = output_path.read_text(encoding="utf-8")
+    assert "한글 문장" in raw
+    assert "\\u" not in raw
+
+
+def test_pipeline_jsonl_empty_line_fails(tmp_path: Path) -> None:
+    path = tmp_path / "bad.jsonl"
+    path.write_text('{"id":"row_1"}\n\n{"id":"row_2"}\n', encoding="utf-8")
+    with pytest.raises(ValueError):
+        pipeline_read_jsonl(path)
 
 
 def test_row_id_preservation_pass() -> None:
@@ -134,4 +172,3 @@ def test_row_id_preservation_fail() -> None:
             base_name="input",
             candidate_name="q1",
         )
-

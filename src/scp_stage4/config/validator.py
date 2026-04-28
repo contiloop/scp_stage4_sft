@@ -25,6 +25,7 @@ _REQUIRED_TOP_LEVEL = (
 
 _REQUIRED_LOG_FIELDS = ("run_id", "subset_idx", "phase", "config_hash")
 _ENV_NAME_RE = re.compile(r"^[A-Z][A-Z0-9_]*$")
+_OVERFLOW_POLICIES = {"split", "skip", "truncate"}
 
 
 def _err(errors: list[str], message: str) -> None:
@@ -132,6 +133,12 @@ def validate_config(cfg: dict[str, Any]) -> None:
                 "data.length.max_source_tokens + min_available_output_tokens + "
                 "safety_margin_tokens must be <= data.length.max_total_tokens",
             )
+    overflow = length_cfg.get("overflow")
+    if not isinstance(overflow, str) or overflow not in _OVERFLOW_POLICIES:
+        _err(
+            errors,
+            "data.length.overflow must be one of: split, skip, truncate",
+        )
 
     q1 = _as_dict(inference.get("q1", {}), "inference.q1", errors)
     q2 = _as_dict(inference.get("q2", {}), "inference.q2", errors)
@@ -146,6 +153,10 @@ def validate_config(cfg: dict[str, Any]) -> None:
         fraction = subset_cfg.get("fraction")
         if not isinstance(fraction, (int, float)) or not (0 < float(fraction) <= 1):
             _err(errors, "pipeline.subset.fraction must be in (0, 1]")
+    elif strategy == "fixed_size":
+        fixed_size = subset_cfg.get("fixed_size")
+        if not isinstance(fixed_size, int) or fixed_size <= 0:
+            _err(errors, "pipeline.subset.fixed_size must be a positive integer")
     min_size = subset_cfg.get("min_size")
     if not isinstance(min_size, int) or min_size <= 0:
         _err(errors, "pipeline.subset.min_size must be a positive integer")

@@ -32,6 +32,8 @@ class SmokeLocalTests(unittest.TestCase):
             self.run_root / "effective_config.yaml",
             self.run_root / "config_hash.txt",
             self.run_root / "events.jsonl",
+            self.run_root / "metrics.jsonl",
+            self.run_root / "failures.jsonl",
             self.run_root / "smoke_summary.json",
             subset_root / "input.jsonl",
             subset_root / "q1.jsonl",
@@ -40,10 +42,19 @@ class SmokeLocalTests(unittest.TestCase):
             subset_root / "selected.jsonl",
             subset_root / "api_requests.jsonl",
             subset_root / "api.jsonl",
+            subset_root / "events.jsonl",
+            subset_root / "metrics.jsonl",
+            subset_root / "failures.jsonl",
             subset_root / "train_final" / "train_rows.jsonl",
         ]
         for path in required_files:
             self.assertTrue(path.exists(), f"missing artifact: {path}")
+
+        effective_config_text = (self.run_root / "effective_config.yaml").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("model:", effective_config_text)
+        self.assertFalse(effective_config_text.lstrip().startswith("{"))
 
         counts = summary["counts"]
         self.assertEqual(counts["input"], 32)
@@ -73,6 +84,15 @@ class SmokeLocalTests(unittest.TestCase):
 
         summary_json = json.loads((self.run_root / "smoke_summary.json").read_text())
         self.assertEqual(summary_json["run_id"], self.run_id)
+
+        run_metrics_lines = (self.run_root / "metrics.jsonl").read_text(encoding="utf-8").strip().splitlines()
+        self.assertGreaterEqual(len(run_metrics_lines), 1)
+        first_metric = json.loads(run_metrics_lines[0])
+        self.assertEqual(first_metric["phase"], "smoke-local")
+        self.assertIn("subset/input_rows", first_metric["metrics"])
+
+        run_failures_text = (self.run_root / "failures.jsonl").read_text(encoding="utf-8")
+        self.assertEqual(run_failures_text.strip(), "")
 
 
 if __name__ == "__main__":

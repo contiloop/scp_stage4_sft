@@ -1,10 +1,11 @@
-"""Stepwise local subset pipeline for deterministic mock contract validation."""
+"""Stepwise local subset pipeline with mock/subprocess runtime hooks."""
 
 from __future__ import annotations
 
 import argparse
 import json
 import random
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping, Sequence
@@ -14,7 +15,7 @@ from scp_stage4.config.loader import compose_config
 from scp_stage4.config.validator import validate_config
 from scp_stage4.data import read_jsonl, validate_row_id_preservation, write_jsonl
 from scp_stage4.logging import LocalJsonlLogger, RequiredLogContext
-from scp_stage4.schema import validate_artifact_rows
+from scp_stage4.schema import QeIsolationRequest, QeIsolationResponse, validate_artifact_rows
 
 
 class StepSubsetError(RuntimeError):
@@ -45,7 +46,11 @@ def _read_artifact(path: Path, artifact_name: str) -> list[dict[str, Any]]:
     return validate_artifact_rows(rows, artifact_name)
 
 
-def _write_artifact(path: Path, rows: Sequence[Mapping[str, Any]], artifact_name: str) -> list[dict[str, Any]]:
+def _write_artifact(
+    path: Path,
+    rows: Sequence[Mapping[str, Any]],
+    artifact_name: str,
+) -> list[dict[str, Any]]:
     normalized = validate_artifact_rows(rows, artifact_name)
     write_jsonl(path, normalized, ensure_ascii=False)
     return normalized
@@ -60,9 +65,8 @@ def _load_fixture_rows() -> list[dict[str, Any]]:
     for path in candidates:
         if path.exists():
             rows = _as_rows(read_jsonl(path))
-            if not rows:
-                continue
-            return validate_artifact_rows(rows, "normalized")
+            if rows:
+                return validate_artifact_rows(rows, "normalized")
 
     rows: list[dict[str, Any]] = []
     for idx in range(64):
@@ -151,7 +155,9 @@ def _build_context(
     persisted = persist_effective_config_artifacts(
         run_dir=run_root,
         effective_config=cfg,
-        write_effective_config=bool(_get_by_dotpath(cfg, "logging.local.write_effective_config", True)),
+        write_effective_config=bool(
+            _get_by_dotpath(cfg, "logging.local.write_effective_config", True)
+        ),
         write_config_hash=bool(_get_by_dotpath(cfg, "logging.local.write_config_hash", True)),
     )
     if str(persisted["config_hash"]) != cfg_hash:
@@ -191,6 +197,54 @@ def _touch_failure_layout(ctx: PipelineContext) -> None:
     (ctx.subset_root / failures_name).touch(exist_ok=True)
 
 
+def _runtime_mode(ctx: PipelineContext, section: str) -> str:
+    return str(_get_by_dotpath(ctx.cfg, f"{section}.runtime.mode", "mock"))
+
+
+def _subprocess_command(ctx: PipelineContext, section: str) -> list[str]:
+    raw = _get_by_dotpath(ctx.cfg, f"{section}.runtime.subprocess.command", None)
+    if not isinstance(raw, list) or not raw:
+        raise StepSubsetError(
+            f"{section}.runtime.subprocess.command must be a non-empty list when mode=subprocess"
+        )
+    command: list[str] = []
+    for part in raw:
+        if not isinstance(part, str) or not part.strip():
+            raise StepSubsetError(
+                f"{section}.runtime.subprocess.command contains non-string/empty part: {part!r}"
+            )
+        command.append(part)
+    return command
+
+
+def _run_subprocess_jsonl(
+    *,
+    ctx: PipelineContext,
+    section: str,
+    phase: str,
+    input_rows: Sequence[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    command = _subprocess_command(ctx, section)
+
+    runtime_dir = ctx.subset_root / "runtime_io"
+    runtime_dir.mkdir(parents=True, exist_ok=True)
+    input_path = runtime_dir / f"{phase}.input.jsonl"
+    output_path = runtime_dir / f"{phase}.output.jsonl"
+    write_jsonl(input_path, input_rows, ensure_ascii=False)
+
+    cmd = list(command) + ["--input", str(input_path), "--output", str(output_path)]
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        stderr = (result.stderr or "").strip()
+        stdout = (result.stdout or "").strip()
+        detail = stderr or stdout or "no output"
+        raise StepSubsetError(f"{section} subprocess failed ({result.returncode}): {detail}")
+    if not output_path.exists():
+        raise StepSubsetError(f"{section} subprocess did not produce output JSONL: {output_path}")
+
+    return _as_rows(read_jsonl(output_path))
+
+
 def _materialize_input_rows(
     ctx: PipelineContext,
     *,
@@ -222,14 +276,148 @@ def _materialize_input_rows(
     return _write_artifact(input_path, selected_rows, "input")
 
 
-def _build_q1_rows(input_rows: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
-    q1_rows: list[dict[str, Any]] = []
-    for idx, row in enumerate(input_rows):
-        q1_row = dict(row)
-        q1_row["mt_q1"] = f"KO_Q1::{row['id']}"
-        q1_row["qe_q1"] = round(0.90 - (idx % 5) * 0.07, 6)
-        q1_rows.append(q1_row)
-    return q1_rows
+def _generate_mt_rows(
+    *,
+    ctx: PipelineContext,
+    rows: Sequence[Mapping[str, Any]],
+    q_tag: str,
+) -> list[dict[str, Any]]:
+    mt_key = f"mt_{q_tag}"
+    mode = _runtime_mode(ctx, "inference")
+
+    if mode == "mock":
+        out_rows: list[dict[str, Any]] = []
+        for row in rows:
+            out = dict(row)
+            if q_tag == "q1":
+                out[mt_key] = f"KO_Q1::{row['id']}"
+            else:
+                out[mt_key] = f"KO_Q2::{row['id']}"
+            out_rows.append(out)
+        return out_rows
+
+    if mode == "subprocess":
+        requests = [
+            {
+                "id": f"{ctx.run_id}/subsets/subset_{ctx.subset_idx:03d}/{row['id']}/{q_tag}",
+                "row_id": row["id"],
+                "q_tag": q_tag,
+                "source": row["source"],
+            }
+            for row in rows
+        ]
+        response_rows = _run_subprocess_jsonl(
+            ctx=ctx,
+            section="inference",
+            phase=f"infer-{q_tag}",
+            input_rows=requests,
+        )
+
+        by_id: dict[str, dict[str, Any]] = {}
+        for resp in response_rows:
+            resp_id = resp.get("id")
+            mt = resp.get("mt")
+            status = resp.get("status", "ok")
+            if not isinstance(resp_id, str) or not resp_id:
+                raise StepSubsetError("inference subprocess response missing id")
+            if status != "ok":
+                error = resp.get("error")
+                raise StepSubsetError(
+                    f"inference subprocess row failed for id={resp_id}: {error}"
+                )
+            if not isinstance(mt, str) or not mt.strip():
+                raise StepSubsetError(f"inference subprocess response missing mt for id={resp_id}")
+            by_id[resp_id] = resp
+
+        out_rows = []
+        for req, row in zip(requests, rows):
+            resp = by_id.get(str(req["id"]))
+            if resp is None:
+                raise StepSubsetError(
+                    f"inference subprocess missing response for request id={req['id']}"
+                )
+            out = dict(row)
+            out[mt_key] = str(resp["mt"])
+            out_rows.append(out)
+        return out_rows
+
+    raise StepSubsetError(f"Unsupported inference runtime mode: {mode}")
+
+
+def _score_mt_rows(
+    *,
+    ctx: PipelineContext,
+    rows: Sequence[Mapping[str, Any]],
+    q_tag: str,
+) -> list[float]:
+    mode = _runtime_mode(ctx, "qe")
+    score_direction = str(_get_by_dotpath(ctx.cfg, "qe.primary.score_direction", "higher_is_better"))
+    if score_direction not in {"higher_is_better", "lower_is_better"}:
+        raise StepSubsetError(
+            "qe.primary.score_direction must be 'higher_is_better' or 'lower_is_better'"
+        )
+
+    if mode == "mock":
+        scores: list[float] = []
+        for idx, row in enumerate(rows):
+            if q_tag == "q1":
+                score = round(0.90 - (idx % 5) * 0.07, 6)
+            else:
+                qe_q1 = float(row.get("qe_q1", 0.0))
+                collapse_drop = round(0.03 + (idx % 4) * 0.04, 6)
+                if score_direction == "lower_is_better":
+                    score = round(qe_q1 + collapse_drop, 6)
+                else:
+                    score = round(max(0.0, qe_q1 - collapse_drop), 6)
+            scores.append(score)
+        return scores
+
+    if mode == "subprocess":
+        backend = str(_get_by_dotpath(ctx.cfg, "qe.primary.backend", "metricx24"))
+        mt_key = f"mt_{q_tag}"
+        requests: list[dict[str, Any]] = []
+        request_ids: list[str] = []
+        for row in rows:
+            request_id = f"{ctx.run_id}/subsets/subset_{ctx.subset_idx:03d}/{row['id']}/{q_tag}"
+            request = QeIsolationRequest(
+                id=request_id,
+                row_id=str(row["id"]),
+                q_tag=q_tag,
+                backend=backend,
+                src=str(row["source"]),
+                mt=str(row[mt_key]),
+                run_id=ctx.run_id,
+                subset_idx=ctx.subset_idx,
+                phase=f"infer-{q_tag}",
+            ).to_dict()
+            requests.append(request)
+            request_ids.append(request_id)
+
+        response_rows = _run_subprocess_jsonl(
+            ctx=ctx,
+            section="qe",
+            phase=f"qe-{q_tag}",
+            input_rows=requests,
+        )
+
+        by_id: dict[str, QeIsolationResponse] = {}
+        for row in response_rows:
+            parsed = QeIsolationResponse.from_dict(row)
+            if parsed.status not in {None, "ok"}:
+                raise StepSubsetError(
+                    f"qe subprocess row failed for id={parsed.id}: {parsed.error}"
+                )
+            by_id[parsed.id] = parsed
+
+        out_scores: list[float] = []
+        for req_id in request_ids:
+            parsed = by_id.get(req_id)
+            if parsed is None:
+                raise StepSubsetError(f"qe subprocess missing response for id={req_id}")
+            out_scores.append(float(parsed.score))
+        return out_scores
+
+    raise StepSubsetError(f"Unsupported qe runtime mode: {mode}")
 
 
 def run_infer_q1(
@@ -252,7 +440,12 @@ def run_infer_q1(
         subset_size_override=subset_size_override,
         use_prepared_data=use_prepared_data,
     )
-    q1_rows = _build_q1_rows(input_rows)
+
+    q1_rows = _generate_mt_rows(ctx=ctx, rows=input_rows, q_tag="q1")
+    qe_scores = _score_mt_rows(ctx=ctx, rows=q1_rows, q_tag="q1")
+    for row, score in zip(q1_rows, qe_scores):
+        row["qe_q1"] = score
+
     q1_rows = _write_artifact(ctx.subset_root / "q1.jsonl", q1_rows, "q1")
     validate_row_id_preservation(input_rows, q1_rows, base_name="input", candidate_name="q1")
 
@@ -292,25 +485,10 @@ def run_infer_q2(
     )
     q1_rows = _read_artifact(ctx.subset_root / "q1.jsonl", "q1")
 
-    score_direction = str(_get_by_dotpath(ctx.cfg, "qe.primary.score_direction", "higher_is_better"))
-    if score_direction not in {"higher_is_better", "lower_is_better"}:
-        raise StepSubsetError(
-            "qe.primary.score_direction must be 'higher_is_better' or 'lower_is_better'"
-        )
-
-    q2_rows: list[dict[str, Any]] = []
-    for idx, row in enumerate(q1_rows):
-        qe_q1 = float(row.get("qe_q1", 0.0))
-        collapse_drop = round(0.03 + (idx % 4) * 0.04, 6)
-        if score_direction == "lower_is_better":
-            qe_q2 = round(qe_q1 + collapse_drop, 6)
-        else:
-            qe_q2 = round(max(0.0, qe_q1 - collapse_drop), 6)
-
-        q2_row = dict(row)
-        q2_row["mt_q2"] = f"KO_Q2::{row['id']}"
-        q2_row["qe_q2"] = qe_q2
-        q2_rows.append(q2_row)
+    q2_rows = _generate_mt_rows(ctx=ctx, rows=q1_rows, q_tag="q2")
+    qe_scores = _score_mt_rows(ctx=ctx, rows=q2_rows, q_tag="q2")
+    for row, score in zip(q2_rows, qe_scores):
+        row["qe_q2"] = score
 
     q2_rows = _write_artifact(ctx.subset_root / "q2.jsonl", q2_rows, "q2")
     validate_row_id_preservation(q1_rows, q2_rows, base_name="q1", candidate_name="q2")
@@ -339,7 +517,9 @@ def _select_fragile(scored_rows: Sequence[Mapping[str, Any]], cfg: Mapping[str, 
     threshold = float(
         _get_by_dotpath(cfg, "qe.scoring.selection.default_rule.require_score_s_gte", 0.0)
     )
-    top_fraction = float(_get_by_dotpath(cfg, "qe.scoring.selection.default_rule.top_fraction", 0.1))
+    top_fraction = float(
+        _get_by_dotpath(cfg, "qe.scoring.selection.default_rule.top_fraction", 0.1)
+    )
 
     eligible = [dict(row) for row in scored_rows if float(row["score_s"]) >= threshold]
     eligible_sorted = sorted(eligible, key=lambda row: (-float(row["score_s"]), str(row["id"])))
@@ -424,6 +604,108 @@ def run_score(
     }
 
 
+def _build_api_requests(
+    *,
+    ctx: PipelineContext,
+    selected_rows: Sequence[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    requests: list[dict[str, Any]] = []
+    for row in selected_rows:
+        request_id = f"{ctx.run_id}/subsets/subset_{ctx.subset_idx:03d}/{row['id']}/api"
+        requests.append(
+            {
+                "id": row["id"],
+                "dataset": row["dataset"],
+                "source": row["source"],
+                "metadata": row["metadata"],
+                "request_id": request_id,
+                "student": row["mt_q1"],
+                "status": "ok",
+            }
+        )
+    return requests
+
+
+def _mock_api_responses(requests: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    responses: list[dict[str, Any]] = []
+    for row in requests:
+        responses.append(
+            {
+                "id": row["id"],
+                "dataset": row["dataset"],
+                "source": row["source"],
+                "metadata": row["metadata"],
+                "request_id": row["request_id"],
+                "gold": f"KO_GOLD::{row['id']}",
+                "status": "ok",
+            }
+        )
+    return responses
+
+
+def _subprocess_api_responses(
+    *,
+    ctx: PipelineContext,
+    requests: Sequence[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    runtime_requests = [
+        {
+            "request_id": row["request_id"],
+            "run_id": ctx.run_id,
+            "subset_idx": ctx.subset_idx,
+            "row_id": row["id"],
+            "source": row["source"],
+            "student": row["student"],
+            "metadata": row["metadata"],
+        }
+        for row in requests
+    ]
+    runtime_responses = _run_subprocess_jsonl(
+        ctx=ctx,
+        section="external_api",
+        phase="call-api",
+        input_rows=runtime_requests,
+    )
+
+    by_request_id: dict[str, dict[str, Any]] = {}
+    for resp in runtime_responses:
+        req_id = resp.get("request_id")
+        if not isinstance(req_id, str) or not req_id:
+            raise StepSubsetError("external_api subprocess response missing request_id")
+        by_request_id[req_id] = resp
+
+    responses: list[dict[str, Any]] = []
+    for req in requests:
+        req_id = str(req["request_id"])
+        runtime_resp = by_request_id.get(req_id)
+        if runtime_resp is None:
+            raise StepSubsetError(
+                f"external_api subprocess missing response for request_id={req_id}"
+            )
+        status = str(runtime_resp.get("status", "ok"))
+        gold = runtime_resp.get("gold")
+        if status == "ok" and (not isinstance(gold, str) or not gold.strip()):
+            raise StepSubsetError(
+                f"external_api subprocess response missing gold for request_id={req_id}"
+            )
+        if status != "ok":
+            gold = f"KO_GOLD_UNAVAILABLE::{req['id']}"
+
+        responses.append(
+            {
+                "id": req["id"],
+                "dataset": req["dataset"],
+                "source": req["source"],
+                "metadata": req["metadata"],
+                "request_id": req_id,
+                "gold": str(gold),
+                "status": status,
+            }
+        )
+
+    return responses
+
+
 def run_call_api(
     *,
     config_path: str = "configs/scp_stage4.yaml",
@@ -439,34 +721,17 @@ def run_call_api(
     )
     selected_rows = _read_artifact(ctx.subset_root / "selected.jsonl", "selected")
 
-    requests: list[dict[str, Any]] = []
-    responses: list[dict[str, Any]] = []
-    for row in selected_rows:
-        request_id = (
-            f"{ctx.run_id}/subsets/subset_{ctx.subset_idx:03d}/{row['id']}/api"
-        )
-        request_row = {
-            "id": row["id"],
-            "dataset": row["dataset"],
-            "source": row["source"],
-            "metadata": row["metadata"],
-            "request_id": request_id,
-            "student": row["mt_q1"],
-            "status": "ok",
-        }
-        response_row = {
-            "id": row["id"],
-            "dataset": row["dataset"],
-            "source": row["source"],
-            "metadata": row["metadata"],
-            "request_id": request_id,
-            "gold": f"KO_GOLD::{row['id']}",
-            "status": "ok",
-        }
-        requests.append(request_row)
-        responses.append(response_row)
-
+    requests = _build_api_requests(ctx=ctx, selected_rows=selected_rows)
     requests = _write_artifact(ctx.subset_root / "api_requests.jsonl", requests, "api_requests")
+
+    mode = _runtime_mode(ctx, "external_api")
+    if mode == "mock":
+        responses = _mock_api_responses(requests)
+    elif mode == "subprocess":
+        responses = _subprocess_api_responses(ctx=ctx, requests=requests)
+    else:
+        raise StepSubsetError(f"Unsupported external_api runtime mode: {mode}")
+
     responses = _write_artifact(ctx.subset_root / "api.jsonl", responses, "api")
 
     validate_row_id_preservation(
@@ -493,7 +758,10 @@ def run_call_api(
     )
     ctx.logger.log_metrics(
         context=_context_for_phase(ctx, "call-api"),
-        metrics={"subset/api_ok_rows": len(responses)},
+        metrics={
+            "subset/api_ok_rows": len([row for row in responses if row["status"] == "ok"]),
+            "subset/api_failed_rows": len([row for row in responses if row["status"] != "ok"]),
+        },
         metric_group="subset",
     )
     _touch_failure_layout(ctx)
@@ -657,7 +925,7 @@ def main(argv: list[str] | None = None) -> int:
             run_id_override=args.run_id,
             subset_idx=args.subset_idx,
             subset_size_override=args.subset_size,
-            use_prepared_data=True,
+            use_prepared_data=args.use_prepared_data,
         )
     elif args.command == "infer-q2":
         summary = run_infer_q2(
@@ -694,7 +962,7 @@ def main(argv: list[str] | None = None) -> int:
             run_id_override=args.run_id,
             subset_idx=args.subset_idx,
             subset_size_override=args.subset_size,
-            use_prepared_data=True,
+            use_prepared_data=args.use_prepared_data,
         )
 
     print(json.dumps(summary, ensure_ascii=False, sort_keys=True))

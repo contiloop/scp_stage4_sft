@@ -1,5 +1,11 @@
 {
   "qe": {
+    "runtime": {
+      "mode": "mock",
+      "subprocess": {
+        "command": null
+      }
+    },
     "epsilon": 1e-06,
     "primary": {
       "backend": "metricx24",

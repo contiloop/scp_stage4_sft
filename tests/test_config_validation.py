@@ -54,6 +54,23 @@ class ConfigValidationTests(unittest.TestCase):
         cfg["pipeline"]["subset"]["fixed_size"] = 32
         validate_config(cfg)
 
+    def test_subprocess_runtime_requires_command_list(self) -> None:
+        cfg = compose_config("configs/scp_stage4.yaml")
+        cfg["inference"]["runtime"]["mode"] = "subprocess"
+        cfg["inference"]["runtime"]["subprocess"]["command"] = None
+        with self.assertRaises(ConfigValidationError):
+            validate_config(cfg)
+
+    def test_subprocess_runtime_accepts_command_lists(self) -> None:
+        cfg = compose_config("configs/scp_stage4.yaml")
+        cfg["inference"]["runtime"]["mode"] = "subprocess"
+        cfg["inference"]["runtime"]["subprocess"]["command"] = ["python", "-m", "x.y"]
+        cfg["qe"]["runtime"]["mode"] = "subprocess"
+        cfg["qe"]["runtime"]["subprocess"]["command"] = ["python", "-m", "x.y"]
+        cfg["external_api"]["runtime"]["mode"] = "subprocess"
+        cfg["external_api"]["runtime"]["subprocess"]["command"] = ["python", "-m", "x.y"]
+        validate_config(cfg)
+
 
 if __name__ == "__main__":
     unittest.main()

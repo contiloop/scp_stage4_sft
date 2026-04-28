@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 import shutil
+import sys
 from pathlib import Path
 
 from scp_stage4.data import read_jsonl
@@ -146,5 +148,53 @@ def test_step_entrypoints_run_in_sequence_and_update_base_filters_non_ok() -> No
         ranks = [row["selection_rank"] for row in selected_rows]
         assert all(isinstance(rank, int) for rank in ranks)
         assert min(ranks) == 1
+    finally:
+        _cleanup(run_id)
+
+
+def test_run_subset_with_subprocess_runtimes() -> None:
+    run_id = "test_step_subset_subprocess"
+    _cleanup(run_id)
+    try:
+        run_prepare_data(config_path="configs/scp_stage4.yaml")
+        inference_cmd = json.dumps(
+            [sys.executable, "-m", "scp_stage4.pipeline.workers.mock_inference_worker"]
+        )
+        qe_cmd = json.dumps([sys.executable, "-m", "scp_stage4.pipeline.workers.mock_qe_worker"])
+        api_cmd = json.dumps([sys.executable, "-m", "scp_stage4.pipeline.workers.mock_api_worker"])
+
+        summary = run_subset(
+            config_path="configs/scp_stage4.yaml",
+            run_id_override=run_id,
+            subset_idx=0,
+            subset_size_override=8,
+            use_prepared_data=True,
+            overrides=[
+                "inference.runtime.mode=subprocess",
+                f"inference.runtime.subprocess.command={inference_cmd}",
+                "qe.runtime.mode=subprocess",
+                f"qe.runtime.subprocess.command={qe_cmd}",
+                "external_api.runtime.mode=subprocess",
+                f"external_api.runtime.subprocess.command={api_cmd}",
+            ],
+        )
+
+        subset_root = _subset_root(run_id)
+        q1_rows = read_jsonl(subset_root / "q1.jsonl")
+        q2_rows = read_jsonl(subset_root / "q2.jsonl")
+        api_rows = read_jsonl(subset_root / "api.jsonl")
+        runtime_io = subset_root / "runtime_io"
+
+        assert q1_rows and q2_rows and api_rows
+        assert (runtime_io / "infer-q1.input.jsonl").exists()
+        assert (runtime_io / "infer-q1.output.jsonl").exists()
+        assert (runtime_io / "qe-q1.input.jsonl").exists()
+        assert (runtime_io / "qe-q2.output.jsonl").exists()
+        assert (runtime_io / "call-api.output.jsonl").exists()
+        assert summary["counts"]["api"] == len(api_rows)
+
+        assert all(str(row["mt_q1"]).startswith("KO_Q1::") for row in q1_rows)
+        assert all(str(row["mt_q2"]).startswith("KO_Q2::") for row in q2_rows)
+        assert all(str(row["gold"]).startswith("KO_GOLD::") for row in api_rows)
     finally:
         _cleanup(run_id)

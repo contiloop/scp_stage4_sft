@@ -1,5 +1,11 @@
 {
   "inference": {
+    "runtime": {
+      "mode": "mock",
+      "subprocess": {
+        "command": null
+      }
+    },
     "q1": {
       "do_sample": true,
       "temperature": 1.1,

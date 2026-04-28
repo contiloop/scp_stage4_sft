@@ -26,6 +26,9 @@ _REQUIRED_TOP_LEVEL = (
 _REQUIRED_LOG_FIELDS = ("run_id", "subset_idx", "phase", "config_hash")
 _ENV_NAME_RE = re.compile(r"^[A-Z][A-Z0-9_]*$")
 _OVERFLOW_POLICIES = {"split", "skip", "truncate"}
+_INFERENCE_RUNTIME_MODES = {"mock", "subprocess"}
+_QE_RUNTIME_MODES = {"mock", "subprocess"}
+_API_RUNTIME_MODES = {"mock", "subprocess"}
 
 
 def _err(errors: list[str], message: str) -> None:
@@ -78,6 +81,43 @@ def _validate_external_api_env_names(external_api: dict[str, Any], errors: list[
             _err(
                 errors,
                 f"external_api.providers.{provider_name}.api_key_env must be an env var name",
+            )
+
+
+def _validate_subprocess_command(
+    section_name: str,
+    section_cfg: dict[str, Any],
+    mode_key: str,
+    command_key: str,
+    allowed_modes: set[str],
+    errors: list[str],
+) -> None:
+    runtime = _as_dict(section_cfg.get("runtime", {}), f"{section_name}.runtime", errors)
+    mode = runtime.get(mode_key)
+    if not isinstance(mode, str) or mode not in allowed_modes:
+        _err(
+            errors,
+            f"{section_name}.runtime.{mode_key} must be one of: {', '.join(sorted(allowed_modes))}",
+        )
+        return
+
+    subprocess_cfg = _as_dict(
+        runtime.get("subprocess", {}), f"{section_name}.runtime.subprocess", errors
+    )
+    command = subprocess_cfg.get(command_key)
+    if mode != "subprocess":
+        return
+    if not isinstance(command, list) or not command:
+        _err(
+            errors,
+            f"{section_name}.runtime.subprocess.{command_key} must be a non-empty list when mode=subprocess",
+        )
+        return
+    for idx, part in enumerate(command):
+        if not isinstance(part, str) or not part.strip():
+            _err(
+                errors,
+                f"{section_name}.runtime.subprocess.{command_key}[{idx}] must be a non-empty string",
             )
 
 
@@ -204,6 +244,30 @@ def validate_config(cfg: dict[str, Any]) -> None:
             )
 
     _validate_external_api_env_names(external_api, errors)
+    _validate_subprocess_command(
+        "inference",
+        inference,
+        "mode",
+        "command",
+        _INFERENCE_RUNTIME_MODES,
+        errors,
+    )
+    _validate_subprocess_command(
+        "qe",
+        _as_dict(cfg.get("qe", {}), "qe", errors),
+        "mode",
+        "command",
+        _QE_RUNTIME_MODES,
+        errors,
+    )
+    _validate_subprocess_command(
+        "external_api",
+        external_api,
+        "mode",
+        "command",
+        _API_RUNTIME_MODES,
+        errors,
+    )
 
     if errors:
         raise ConfigValidationError("Config validation failed:\n- " + "\n- ".join(errors))

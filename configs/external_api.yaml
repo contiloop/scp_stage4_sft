@@ -1,5 +1,11 @@
 {
   "external_api": {
+    "runtime": {
+      "mode": "mock",
+      "subprocess": {
+        "command": null
+      }
+    },
     "routing": {
       "mode": "single",
       "fallback_enabled": false,

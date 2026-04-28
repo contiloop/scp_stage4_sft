@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import random
 from pathlib import Path
@@ -13,6 +14,7 @@ from scp_stage4.config.loader import compose_config
 from scp_stage4.config.validator import validate_config
 from scp_stage4.logging import LocalJsonlLogger, RequiredLogContext
 from scp_stage4.pipeline.io_utils import iter_jsonl, write_jsonl
+from scp_stage4.schema import validate_artifact_rows
 
 
 class SmokeValidationError(RuntimeError):
@@ -181,31 +183,85 @@ def _select_fragile(scored_rows: list[dict[str, Any]], cfg: dict[str, Any]) -> l
 
 
 def _make_api_artifacts(
-    selected_rows: list[dict[str, Any]], run_id: str
+    selected_rows: list[dict[str, Any]],
+    run_id: str,
+    cfg: dict[str, Any],
+    cfg_hash: str,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
 
     requests: list[dict[str, Any]] = []
     responses: list[dict[str, Any]] = []
+    provider = str(_get_by_dotpath(cfg, "external_api.primary.provider", "openai"))
+    model = str(_get_by_dotpath(cfg, "external_api.primary.model", "unknown"))
+    prompt_cfg = _get_by_dotpath(cfg, "prompts", {})
+    if not isinstance(prompt_cfg, dict):
+        prompt_cfg = {}
+    prompt_version = str(prompt_cfg.get("version", "teacher_correction_v1"))
+    prompt_hash = hashlib.sha256(
+        json.dumps(prompt_cfg, ensure_ascii=False, sort_keys=True).encode("utf-8")
+    ).hexdigest()
 
     for row in selected_rows:
         request_id = f"{run_id}/subsets/subset_000/{row['id']}/api"
+        qe_q1 = float(row.get("qe_q1", 0.0))
+        qe_q2 = float(row.get("qe_q2", 0.0))
+        delta_qe = round(qe_q2 - qe_q1, 6)
+        collapse_term = max((qe_q1 - qe_q2) / max(qe_q1 + 1e-6, 1e-6), 0.0)
         req = {
             "id": row["id"],
+            "row_id": row["id"],
             "dataset": row["dataset"],
             "source": row["source"],
             "metadata": row["metadata"],
             "request_id": request_id,
+            "run_id": run_id,
+            "subset_idx": 0,
             "student": row["mt_q1"],
+            "selection": {
+                "score_s": float(row["score_s"]),
+                "qe_q1": qe_q1,
+                "qe_q2": qe_q2,
+                "delta_qe": float(delta_qe),
+                "collapse_term": float(round(collapse_term, 6)),
+            },
+            "prompt_version": prompt_version,
+            "prompt_hash": prompt_hash,
+            "provider": provider,
+            "model": model,
             "status": "ok",
+            "config_hash": cfg_hash,
         }
         resp = {
             "id": row["id"],
+            "row_id": row["id"],
             "dataset": row["dataset"],
             "source": row["source"],
             "metadata": row["metadata"],
             "request_id": request_id,
+            "run_id": run_id,
+            "subset_idx": 0,
+            "provider": provider,
+            "model": model,
             "status": "ok",
+            "teacher_label": "minor_edit",
+            "student": row["mt_q1"],
             "gold": f"KO_GOLD::{row['id']}",
+            "reason": None,
+            "prompt_version": prompt_version,
+            "prompt_hash": prompt_hash,
+            "usage": {
+                "input_tokens": 96,
+                "output_tokens": 72,
+                "total_tokens": 168,
+            },
+            "cost": {
+                "currency": "USD",
+                "estimated": 0.0,
+            },
+            "latency_ms": 1.0,
+            "attempt": 1,
+            "error": None,
+            "config_hash": cfg_hash,
         }
         requests.append(req)
         responses.append(resp)
@@ -293,7 +349,9 @@ def run_smoke(
     q1_rows, q2_rows = _build_q_rows(input_rows, score_direction)
     scored_rows = _score_rows(q2_rows, score_direction)
     selected_rows = _select_fragile(scored_rows, cfg)
-    api_requests, api_rows = _make_api_artifacts(selected_rows, run_id)
+    api_requests, api_rows = _make_api_artifacts(selected_rows, run_id, cfg, cfg_hash)
+    api_requests = validate_artifact_rows(api_requests, "api_requests")
+    api_rows = validate_artifact_rows(api_rows, "api")
     train_rows = [
         {
             "id": row["id"],

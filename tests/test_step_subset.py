@@ -5,9 +5,12 @@ import shutil
 import sys
 from pathlib import Path
 
+import pytest
+
 from scp_stage4.data import read_jsonl
 from scp_stage4.pipeline.prepare_data import run_prepare_data
 from scp_stage4.pipeline.step_subset import (
+    StepSubsetError,
     run_call_api,
     run_infer_q1,
     run_infer_q2,
@@ -16,6 +19,7 @@ from scp_stage4.pipeline.step_subset import (
     run_train_collapse_lora,
     run_unload_collapse_lora,
     run_update_base,
+    main as step_subset_main,
 )
 
 
@@ -223,3 +227,79 @@ def test_run_subset_with_subprocess_runtimes() -> None:
         assert all(str(row["gold"]).startswith("KO_GOLD::") for row in api_rows)
     finally:
         _cleanup(run_id)
+
+
+def test_infer_q2_requires_collapse_adapter_state() -> None:
+    run_id = "test_step_subset_require_collapse_before_q2"
+    _cleanup(run_id)
+    try:
+        run_prepare_data(config_path="configs/scp_stage4.yaml")
+        run_infer_q1(
+            config_path="configs/scp_stage4.yaml",
+            run_id_override=run_id,
+            subset_idx=0,
+            subset_size_override=4,
+            use_prepared_data=True,
+        )
+        try:
+            run_infer_q2(
+                config_path="configs/scp_stage4.yaml",
+                run_id_override=run_id,
+                subset_idx=0,
+            )
+            assert False, "infer-q2 must fail when collapse adapter state is missing"
+        except StepSubsetError as exc:
+            assert "collapse adapter state is missing" in str(exc)
+    finally:
+        _cleanup(run_id)
+
+
+def test_step_subset_cli_writes_structured_failure_log_on_error() -> None:
+    run_id = "test_step_subset_cli_failure_logging"
+    _cleanup(run_id)
+    try:
+        rc = step_subset_main(
+            [
+                "call-api",
+                "--config",
+                "configs/scp_stage4.yaml",
+                "--run-id",
+                run_id,
+                "--subset-idx",
+                "0",
+            ]
+        )
+        assert rc == 1
+
+        run_root = _run_root(run_id)
+        failures_path = run_root / "failures.jsonl"
+        subset_failures_path = _subset_root(run_id) / "failures.jsonl"
+        assert failures_path.exists()
+        assert subset_failures_path.exists()
+
+        failure_rows = read_jsonl(failures_path)
+        assert failure_rows, "expected at least one structured failure row"
+        latest = failure_rows[-1]
+        assert latest["run_id"] == run_id
+        assert latest["subset_idx"] == 0
+        assert latest["phase"] == "call-api"
+        assert latest["status"] == "failed"
+        assert latest["failure_type"] == "call-api_failed"
+        assert isinstance(latest["config_hash"], str) and latest["config_hash"]
+    finally:
+        _cleanup(run_id)
+
+
+def test_run_subset_use_prepared_data_requires_prepare_data(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    with pytest.raises(
+        StepSubsetError,
+        match="No prepared train rows found; run prepare-data before using prepared-data mode",
+    ):
+        run_subset(
+            config_path=str(Path(__file__).resolve().parents[1] / "configs" / "scp_stage4.yaml"),
+            run_id_override="test_missing_prepared_rows",
+            subset_idx=0,
+            subset_size_override=8,
+            use_prepared_data=True,
+        )

@@ -12,6 +12,7 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 from scp_stage4.pipeline import remote_checks
+from scp_stage4.pipeline.prepare_data import run_prepare_data
 
 
 CONFIG_PATH = str(ROOT / "configs" / "scp_stage4.yaml")
@@ -61,6 +62,7 @@ def test_smoke_api_non_placeholder_with_key_succeeds(monkeypatch) -> None:
 
 def test_dry_run_subset_generates_mock_artifacts(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.chdir(tmp_path)
+    run_prepare_data(CONFIG_PATH)
     rc = remote_checks.cmd_dry_run_subset(CONFIG_PATH, [])
     assert rc == 0
     run_root = tmp_path / "artifacts" / "runs" / "dry_run_remote_subset"

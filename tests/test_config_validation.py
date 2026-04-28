@@ -41,6 +41,12 @@ class ConfigValidationTests(unittest.TestCase):
         with self.assertRaises(ConfigValidationError):
             validate_config(cfg)
 
+    def test_length_split_long_sentence_policy_must_be_supported(self) -> None:
+        cfg = compose_config("configs/scp_stage4.yaml")
+        cfg["data"]["length"]["split"]["fallback_for_long_sentence"] = "invalid_mode"
+        with self.assertRaises(ConfigValidationError):
+            validate_config(cfg)
+
     def test_fixed_size_strategy_requires_fixed_size_key(self) -> None:
         cfg = compose_config("configs/scp_stage4.yaml")
         cfg["pipeline"]["subset"]["strategy"] = "fixed_size"

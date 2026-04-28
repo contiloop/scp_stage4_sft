@@ -7,6 +7,7 @@ from pathlib import Path
 
 from scp_stage4.pipeline.io_utils import read_jsonl
 from scp_stage4.pipeline.smoke_local import run_smoke
+from scp_stage4.schema import validate_artifact_rows
 
 
 class SmokeLocalTests(unittest.TestCase):
@@ -72,6 +73,7 @@ class SmokeLocalTests(unittest.TestCase):
         q2_rows = read_jsonl(subset_root / "q2.jsonl")
         scored_rows = read_jsonl(subset_root / "scored.jsonl")
         selected_rows = read_jsonl(subset_root / "selected.jsonl")
+        api_requests = read_jsonl(subset_root / "api_requests.jsonl")
         api_rows = read_jsonl(subset_root / "api.jsonl")
 
         input_ids = [row["id"] for row in input_rows]
@@ -81,7 +83,10 @@ class SmokeLocalTests(unittest.TestCase):
 
         selected_ids = [row["id"] for row in selected_rows]
         self.assertTrue(set(selected_ids).issubset(set(input_ids)))
+        self.assertEqual([row["id"] for row in api_requests], selected_ids)
         self.assertEqual([row["id"] for row in api_rows], selected_ids)
+        validate_artifact_rows(api_requests, "api_requests")
+        validate_artifact_rows(api_rows, "api")
 
         summary_json = json.loads((self.run_root / "smoke_summary.json").read_text())
         self.assertEqual(summary_json["run_id"], self.run_id)

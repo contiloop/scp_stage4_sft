@@ -131,7 +131,7 @@ def cmd_dry_run_subset(config_path: str, overrides: list[str]) -> int:
         overrides=merged_overrides,
         run_id_override="dry_run_remote_subset",
         subset_size_override=32,
-        use_prepared_data=False,
+        use_prepared_data=True,
     )
     print(
         "dry-run-remote-subset: generated local mock artifacts "

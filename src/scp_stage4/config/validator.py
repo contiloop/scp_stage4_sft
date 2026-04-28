@@ -26,6 +26,9 @@ _REQUIRED_TOP_LEVEL = (
 _REQUIRED_LOG_FIELDS = ("run_id", "subset_idx", "phase", "config_hash")
 _ENV_NAME_RE = re.compile(r"^[A-Z][A-Z0-9_]*$")
 _OVERFLOW_POLICIES = {"split", "skip", "truncate"}
+_SPLIT_UNIT_POLICIES = {"sentence"}
+_SPLIT_LONG_SENTENCE_POLICIES = {"skip", "truncate", "split"}
+_SPLIT_MAX_CHUNKS_EXCEEDED_POLICIES = {"skip", "error"}
 _DATA_RUNTIME_MODES = {"fixture", "hf", "local_jsonl"}
 _INFERENCE_RUNTIME_MODES = {"mock", "subprocess"}
 _QE_RUNTIME_MODES = {"mock", "subprocess"}
@@ -249,6 +252,64 @@ def validate_config(cfg: dict[str, Any]) -> None:
     tokenizer_fallback = length_cfg.get("tokenizer_fallback", "whitespace")
     if tokenizer_fallback not in {"whitespace", "error"}:
         _err(errors, "data.length.tokenizer_fallback must be 'whitespace' or 'error'")
+    split_cfg = _as_dict(length_cfg.get("split", {}), "data.length.split", errors)
+    split_unit = split_cfg.get("unit", "sentence")
+    if not isinstance(split_unit, str) or split_unit not in _SPLIT_UNIT_POLICIES:
+        _err(
+            errors,
+            "data.length.split.unit must be one of: "
+            + ", ".join(sorted(_SPLIT_UNIT_POLICIES)),
+        )
+    max_chunks = split_cfg.get("max_chunks_per_row")
+    if isinstance(max_chunks, bool) or not isinstance(max_chunks, int) or max_chunks <= 0:
+        _err(errors, "data.length.split.max_chunks_per_row must be a positive integer")
+    max_tokens_per_chunk = split_cfg.get("max_source_tokens_per_chunk")
+    if (
+        isinstance(max_tokens_per_chunk, bool)
+        or not isinstance(max_tokens_per_chunk, int)
+        or max_tokens_per_chunk <= 0
+    ):
+        _err(
+            errors,
+            "data.length.split.max_source_tokens_per_chunk must be a positive integer",
+        )
+    min_chunk_tokens = split_cfg.get("min_chunk_tokens")
+    if (
+        isinstance(min_chunk_tokens, bool)
+        or not isinstance(min_chunk_tokens, int)
+        or min_chunk_tokens <= 0
+    ):
+        _err(errors, "data.length.split.min_chunk_tokens must be a positive integer")
+    if (
+        isinstance(min_chunk_tokens, int)
+        and isinstance(max_tokens_per_chunk, int)
+        and min_chunk_tokens > max_tokens_per_chunk
+    ):
+        _err(
+            errors,
+            "data.length.split.min_chunk_tokens must be <= "
+            "data.length.split.max_source_tokens_per_chunk",
+        )
+    fallback_for_long_sentence = split_cfg.get("fallback_for_long_sentence", "skip")
+    if (
+        not isinstance(fallback_for_long_sentence, str)
+        or fallback_for_long_sentence not in _SPLIT_LONG_SENTENCE_POLICIES
+    ):
+        _err(
+            errors,
+            "data.length.split.fallback_for_long_sentence must be one of: "
+            + ", ".join(sorted(_SPLIT_LONG_SENTENCE_POLICIES)),
+        )
+    on_max_chunks_exceeded = split_cfg.get("on_max_chunks_exceeded", "skip")
+    if (
+        not isinstance(on_max_chunks_exceeded, str)
+        or on_max_chunks_exceeded not in _SPLIT_MAX_CHUNKS_EXCEEDED_POLICIES
+    ):
+        _err(
+            errors,
+            "data.length.split.on_max_chunks_exceeded must be one of: "
+            + ", ".join(sorted(_SPLIT_MAX_CHUNKS_EXCEEDED_POLICIES)),
+        )
 
     q1 = _as_dict(inference.get("q1", {}), "inference.q1", errors)
     q2 = _as_dict(inference.get("q2", {}), "inference.q2", errors)

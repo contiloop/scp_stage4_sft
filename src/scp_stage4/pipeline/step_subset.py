@@ -8,6 +8,7 @@ import json
 import math
 import random
 import subprocess
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping, Sequence
@@ -261,6 +262,41 @@ def _touch_failure_layout(ctx: PipelineContext) -> None:
     failures_name = str(_get_by_dotpath(ctx.cfg, "logging.local.failures_jsonl", "failures.jsonl"))
     (ctx.run_root / failures_name).touch(exist_ok=True)
     (ctx.subset_root / failures_name).touch(exist_ok=True)
+
+
+def _log_cli_failure(
+    *,
+    config_path: str,
+    overrides: list[str] | None,
+    run_id_override: str | None,
+    subset_idx: int,
+    phase: str,
+    failure: Exception,
+) -> None:
+    try:
+        ctx = _build_context(
+            config_path=config_path,
+            overrides=overrides,
+            run_id_override=run_id_override,
+            subset_idx=subset_idx,
+        )
+        _touch_failure_layout(ctx)
+        context = _context_for_phase(ctx, phase)
+        ctx.logger.log_failure(
+            context=context,
+            failure_type=f"{phase}_failed",
+            status="failed",
+            error=str(failure),
+        )
+        ctx.logger.log_event(
+            context=context,
+            event_type="phase_failed",
+            status="failed",
+            error=str(failure),
+        )
+    except Exception:
+        # Best-effort failure logging: preserve original exit behavior if logging setup fails.
+        return
 
 
 def _runtime_mode(ctx: PipelineContext, section: str) -> str:
@@ -541,6 +577,11 @@ def _materialize_input_rows(
                 if loaded:
                     pool_rows = validate_artifact_rows(loaded, "normalized")
                     break
+
+    if use_prepared_data and not pool_rows:
+        raise StepSubsetError(
+            "No prepared train rows found; run prepare-data before using prepared-data mode"
+        )
 
     if not pool_rows:
         pool_rows = _load_fixture_rows()
@@ -884,6 +925,7 @@ def run_infer_q2(
         subset_idx=subset_idx,
     )
     q1_rows = _read_artifact(ctx.subset_root / "q1.jsonl", "q1")
+    _collapse_adapter_ref(ctx)
 
     q2_rows = _generate_mt_rows(ctx=ctx, rows=q1_rows, q_tag="q2")
     qe_scores = _score_mt_rows(ctx=ctx, rows=q2_rows, q_tag="q2")
@@ -1743,76 +1785,88 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--use-prepared-data", action="store_true")
     parser.add_argument("--use-full-train-data", action="store_true")
     args, overrides = parser.parse_known_args(argv)
-
-    if args.command == "infer-q1":
-        summary = run_infer_q1(
+    phase = args.command
+    try:
+        if args.command == "infer-q1":
+            summary = run_infer_q1(
+                config_path=args.config,
+                overrides=overrides,
+                run_id_override=args.run_id,
+                subset_idx=args.subset_idx,
+                subset_size_override=args.subset_size,
+                use_prepared_data=args.use_prepared_data,
+                use_sampled_data=not args.use_full_train_data,
+            )
+        elif args.command == "train-collapse-lora":
+            summary = run_train_collapse_lora(
+                config_path=args.config,
+                overrides=overrides,
+                run_id_override=args.run_id,
+                subset_idx=args.subset_idx,
+            )
+        elif args.command == "infer-q2":
+            summary = run_infer_q2(
+                config_path=args.config,
+                overrides=overrides,
+                run_id_override=args.run_id,
+                subset_idx=args.subset_idx,
+            )
+        elif args.command == "unload-collapse-lora":
+            summary = run_unload_collapse_lora(
+                config_path=args.config,
+                overrides=overrides,
+                run_id_override=args.run_id,
+                subset_idx=args.subset_idx,
+            )
+        elif args.command == "score":
+            summary = run_score(
+                config_path=args.config,
+                overrides=overrides,
+                run_id_override=args.run_id,
+                subset_idx=args.subset_idx,
+            )
+        elif args.command == "call-api":
+            summary = run_call_api(
+                config_path=args.config,
+                overrides=overrides,
+                run_id_override=args.run_id,
+                subset_idx=args.subset_idx,
+            )
+        elif args.command == "update-base":
+            summary = run_update_base(
+                config_path=args.config,
+                overrides=overrides,
+                run_id_override=args.run_id,
+                subset_idx=args.subset_idx,
+            )
+        elif args.command == "run-subset":
+            summary = run_subset(
+                config_path=args.config,
+                overrides=overrides,
+                run_id_override=args.run_id,
+                subset_idx=args.subset_idx,
+                subset_size_override=args.subset_size,
+                use_prepared_data=args.use_prepared_data,
+                use_sampled_data=not args.use_full_train_data,
+            )
+        else:
+            summary = run_stage(
+                config_path=args.config,
+                overrides=overrides,
+                run_id_override=args.run_id,
+                subset_size_override=args.subset_size,
+            )
+    except Exception as exc:
+        _log_cli_failure(
             config_path=args.config,
             overrides=overrides,
             run_id_override=args.run_id,
             subset_idx=args.subset_idx,
-            subset_size_override=args.subset_size,
-            use_prepared_data=args.use_prepared_data,
-            use_sampled_data=not args.use_full_train_data,
+            phase=phase,
+            failure=exc,
         )
-    elif args.command == "train-collapse-lora":
-        summary = run_train_collapse_lora(
-            config_path=args.config,
-            overrides=overrides,
-            run_id_override=args.run_id,
-            subset_idx=args.subset_idx,
-        )
-    elif args.command == "infer-q2":
-        summary = run_infer_q2(
-            config_path=args.config,
-            overrides=overrides,
-            run_id_override=args.run_id,
-            subset_idx=args.subset_idx,
-        )
-    elif args.command == "unload-collapse-lora":
-        summary = run_unload_collapse_lora(
-            config_path=args.config,
-            overrides=overrides,
-            run_id_override=args.run_id,
-            subset_idx=args.subset_idx,
-        )
-    elif args.command == "score":
-        summary = run_score(
-            config_path=args.config,
-            overrides=overrides,
-            run_id_override=args.run_id,
-            subset_idx=args.subset_idx,
-        )
-    elif args.command == "call-api":
-        summary = run_call_api(
-            config_path=args.config,
-            overrides=overrides,
-            run_id_override=args.run_id,
-            subset_idx=args.subset_idx,
-        )
-    elif args.command == "update-base":
-        summary = run_update_base(
-            config_path=args.config,
-            overrides=overrides,
-            run_id_override=args.run_id,
-            subset_idx=args.subset_idx,
-        )
-    elif args.command == "run-subset":
-        summary = run_subset(
-            config_path=args.config,
-            overrides=overrides,
-            run_id_override=args.run_id,
-            subset_idx=args.subset_idx,
-            subset_size_override=args.subset_size,
-            use_prepared_data=args.use_prepared_data,
-            use_sampled_data=not args.use_full_train_data,
-        )
-    else:
-        summary = run_stage(
-            config_path=args.config,
-            overrides=overrides,
-            run_id_override=args.run_id,
-            subset_size_override=args.subset_size,
-        )
+        print(str(exc), file=sys.stderr)
+        return 1
 
     print(json.dumps(summary, ensure_ascii=False, sort_keys=True))
     return 0

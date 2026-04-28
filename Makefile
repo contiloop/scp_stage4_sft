@@ -89,8 +89,8 @@ prepare-data: validate-config
 # output artifacts: subsets/subset_000/q1.jsonl (mocked)
 # runtime: local CPU only, mocked generation
 # exit behavior: 0 on deterministic mocked output path readiness; non-zero on contract failure
-infer-q1:
-	@echo "infer-q1: mocked in smoke-local (no real model inference)"
+infer-q1: prepare-data
+	@PYTHONPATH=$(PYTHONPATH) $(PY) -m scp_stage4.pipeline.step_subset infer-q1 --config $(CONFIG) --run-id $(RUN_ID) --subset-idx 0 --use-prepared-data
 
 # Target: train-collapse-lora
 # required config keys: training.collapse_lora.*, training.backend
@@ -98,8 +98,9 @@ infer-q1:
 # output artifacts: subsets/subset_000/train_final/ (mocked marker)
 # runtime: local CPU only, mocked training
 # exit behavior: 0 on mocked contract pass; non-zero on contract failure
-train-collapse-lora:
-	@echo "train-collapse-lora: mocked in smoke-local (no real training)"
+train-collapse-lora: infer-q1
+	@mkdir -p artifacts/runs/$(RUN_ID)/subsets/subset_000/train_final
+	@echo "mock collapse lora trained for subset_000" > artifacts/runs/$(RUN_ID)/subsets/subset_000/train_final/collapse_lora.marker.txt
 
 # Target: infer-q2
 # required config keys: inference.q2.*, training.collapse_lora.*
@@ -107,8 +108,8 @@ train-collapse-lora:
 # output artifacts: subsets/subset_000/q2.jsonl (mocked)
 # runtime: local CPU only, mocked generation
 # exit behavior: 0 on deterministic mocked output path readiness; non-zero on contract failure
-infer-q2:
-	@echo "infer-q2: mocked in smoke-local (no real collapse adapter inference)"
+infer-q2: train-collapse-lora
+	@PYTHONPATH=$(PYTHONPATH) $(PY) -m scp_stage4.pipeline.step_subset infer-q2 --config $(CONFIG) --run-id $(RUN_ID) --subset-idx 0
 
 # Target: score
 # required config keys: qe.*, pipeline.subset.*
@@ -116,8 +117,8 @@ infer-q2:
 # output artifacts: subsets/subset_000/scored.jsonl, selected.jsonl (mocked)
 # runtime: local CPU only, mocked QE scoring
 # exit behavior: 0 on deterministic mocked scoring pass; non-zero on contract failure
-score:
-	@echo "score: mocked in smoke-local (no real QE subprocess)"
+score: infer-q2
+	@PYTHONPATH=$(PYTHONPATH) $(PY) -m scp_stage4.pipeline.step_subset score --config $(CONFIG) --run-id $(RUN_ID) --subset-idx 0
 
 # Target: call-api
 # required config keys: external_api.*, logging.*
@@ -125,8 +126,8 @@ score:
 # output artifacts: subsets/subset_000/api_requests.jsonl, api.jsonl (mocked)
 # runtime: local CPU only, mocked external API behavior
 # exit behavior: 0 on deterministic mocked API contract pass; non-zero on contract failure
-call-api:
-	@echo "call-api: mocked in smoke-local (no real external API call)"
+call-api: score
+	@PYTHONPATH=$(PYTHONPATH) $(PY) -m scp_stage4.pipeline.step_subset call-api --config $(CONFIG) --run-id $(RUN_ID) --subset-idx 0
 
 # Target: update-base
 # required config keys: training.base_update.*, training.backend
@@ -134,8 +135,8 @@ call-api:
 # output artifacts: subsets/subset_000/train_final/train_rows.jsonl (mocked)
 # runtime: local CPU only, mocked training update
 # exit behavior: 0 on deterministic mocked update pass; non-zero on contract failure
-update-base:
-	@echo "update-base: mocked in smoke-local (no real base model update)"
+update-base: call-api
+	@PYTHONPATH=$(PYTHONPATH) $(PY) -m scp_stage4.pipeline.step_subset update-base --config $(CONFIG) --run-id $(RUN_ID) --subset-idx 0
 
 # Target: run-subset
 # required config keys: full local harness config
@@ -144,7 +145,7 @@ update-base:
 # runtime: local CPU only, mocked end-to-end subset flow
 # exit behavior: 0 on full mocked subset contract pass; non-zero on any step contract failure
 run-subset: prepare-data
-	@PYTHONPATH=$(PYTHONPATH) $(PY) -m scp_stage4.pipeline.smoke_local --config $(CONFIG) --run-id $(RUN_ID) --use-prepared-data
+	@PYTHONPATH=$(PYTHONPATH) $(PY) -m scp_stage4.pipeline.step_subset run-subset --config $(CONFIG) --run-id $(RUN_ID) --subset-idx 0 --use-prepared-data
 
 # Target: run-stage
 # required config keys: full local harness config

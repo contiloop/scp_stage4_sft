@@ -10,7 +10,7 @@ from pathlib import Path
 
 from scp_stage4.config.loader import compose_config
 from scp_stage4.config.validator import validate_config
-from scp_stage4.pipeline.smoke_local import run_smoke
+from scp_stage4.pipeline.step_subset import run_subset
 
 
 def _is_placeholder_model(model_name: str) -> bool:
@@ -126,11 +126,12 @@ def cmd_smoke_api(config_path: str, overrides: list[str]) -> int:
 
 def cmd_dry_run_subset(config_path: str, overrides: list[str]) -> int:
     merged_overrides = list(overrides) + ["data.subset_size=32"]
-    summary = run_smoke(
+    summary = run_subset(
         config_path=config_path,
         overrides=merged_overrides,
         run_id_override="dry_run_remote_subset",
         subset_size_override=32,
+        use_prepared_data=False,
     )
     print(
         "dry-run-remote-subset: generated local mock artifacts "

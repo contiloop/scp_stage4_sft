@@ -121,14 +121,15 @@ Each line:
 
 ```json
 {
+  "id": "sample_000001",
   "request_id": "run_abc123/subsets/subset_000/sample_000001/api",
   "run_id": "run_abc123",
   "subset_idx": 0,
   "row_id": "sample_000001",
+  "dataset": "alwaysgood/reuter_processed",
   "source": "English source text",
   "student": "Korean model draft from mt_q1",
   "metadata": {
-    "dataset": "alwaysgood/reuter_processed",
     "title": "optional headline",
     "document_type": "article",
     "text_role": "body",
@@ -138,12 +139,15 @@ Each line:
     "score_s": 1.27,
     "qe_q1": 0.82,
     "qe_q2": 0.71,
-    "delta_qe": -0.11
+    "delta_qe": -0.11,
+    "collapse_term": 0.134
   },
   "prompt_version": "teacher_correction_v1",
   "prompt_hash": "string",
   "provider": "openai",
-  "model": "configured-provider-model"
+  "model": "configured-provider-model",
+  "status": "ok",
+  "config_hash": "sha256-of-effective-config"
 }
 ```
 
@@ -151,17 +155,22 @@ Required fields:
 
 | Field | Meaning |
 |---|---|
+| `id` | stable row id copied from selected row |
 | `request_id` | unique API request id |
 | `run_id` | experiment run id |
 | `subset_idx` | SCP subset index |
 | `row_id` | original selected row id |
+| `dataset` | dataset name for traceability |
 | `source` | English source text |
 | `student` | model draft translation, usually `mt_q1` |
 | `metadata` | context such as dataset, document type, text role, and title/headline |
+| `selection` | score snapshot (`score_s`, `qe_q1`, `qe_q2`, `delta_qe`, optional `collapse_term`) |
 | `prompt_version` | teacher prompt version |
 | `prompt_hash` | teacher prompt hash |
 | `provider` | configured provider |
 | `model` | configured model |
+| `status` | request staging status (default `ok`) |
+| `config_hash` | run config hash for reproducibility |
 
 Rules:
 
@@ -224,10 +233,18 @@ Each line:
 
 ```json
 {
+  "id": "sample_000001",
   "request_id": "run_abc123/subsets/subset_000/sample_000001/api",
   "run_id": "run_abc123",
   "subset_idx": 0,
   "row_id": "sample_000001",
+  "dataset": "alwaysgood/reuter_processed",
+  "metadata": {
+    "title": "optional headline",
+    "document_type": "article",
+    "text_role": "body",
+    "original_id": "optional source id"
+  },
   "provider": "openai",
   "model": "configured-provider-model",
   "status": "ok",
@@ -249,7 +266,8 @@ Each line:
   },
   "latency_ms": 2300,
   "attempt": 1,
-  "error": null
+  "error": null,
+  "config_hash": "sha256-of-effective-config"
 }
 ```
 
@@ -279,6 +297,7 @@ Rules:
 - `reason` is required when `status` is `filtered`, `skipped`, `needs_review`, or `failed`
 - failed rows must include a sanitized error message
 - API responses must preserve request ids
+- API responses should preserve `id`, `row_id`, `dataset`, and `metadata` from request rows
 - response artifacts must not contain secrets
 
 ---
@@ -345,7 +364,7 @@ Artifact rule:
 
 - `api_requests.jsonl` stores rendered, sanitized request records before provider execution
 - `api.jsonl` stores one final response/status row per request after retry handling
-- both files must share `request_id` and `row_id`
+- both files must share `id`, `request_id`, and `row_id`
 - `api.jsonl` is the artifact consumed by base update training
 
 ---

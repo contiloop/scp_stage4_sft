@@ -9,6 +9,10 @@
       "seed": 42,
       "drop_last": false
     },
+    "stage": {
+      "max_subsets": null,
+      "use_sampled_data": false
+    },
     "execution": {
       "allow_microbatch_overlap": true,
       "allow_next_subset_q1_prefetch": false,

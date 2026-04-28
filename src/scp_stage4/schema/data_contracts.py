@@ -70,6 +70,13 @@ def _optional_int(data: Mapping[str, Any], key: str, *, context: str) -> int | N
     return value
 
 
+def _require_int(data: Mapping[str, Any], key: str, *, context: str) -> int:
+    value = _require_key(data, key, context=context)
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise SchemaValidationError(f"{context}.{key} must be an int")
+    return value
+
+
 def _optional_float(data: Mapping[str, Any], key: str, *, context: str) -> float | None:
     value = data.get(key)
     if value is None:
@@ -77,6 +84,15 @@ def _optional_float(data: Mapping[str, Any], key: str, *, context: str) -> float
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise SchemaValidationError(f"{context}.{key} must be a number or null")
     return float(value)
+
+
+def _optional_bool(data: Mapping[str, Any], key: str, *, context: str) -> bool | None:
+    value = data.get(key)
+    if value is None:
+        return None
+    if not isinstance(value, bool):
+        raise SchemaValidationError(f"{context}.{key} must be a bool or null")
+    return value
 
 
 def _require_float(data: Mapping[str, Any], key: str, *, context: str) -> float:
@@ -206,13 +222,24 @@ class Q1Row:
     metadata: RowMetadata
     mt_q1: str
     qe_q1: float | None = None
+    qe_raw_q1: float | None = None
+    metricx_q1_clamped: bool | None = None
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> "Q1Row":
         data = _ensure_mapping(data, context="q1")
         _reject_extra_keys(
             data,
-            allowed={"id", "dataset", "source", "metadata", "mt_q1", "qe_q1"},
+            allowed={
+                "id",
+                "dataset",
+                "source",
+                "metadata",
+                "mt_q1",
+                "qe_q1",
+                "qe_raw_q1",
+                "metricx_q1_clamped",
+            },
             context="q1",
         )
         return cls(
@@ -222,6 +249,8 @@ class Q1Row:
             metadata=RowMetadata.from_dict(_ensure_mapping(_require_key(data, "metadata", context="q1"), context="metadata")),
             mt_q1=_require_str(data, "mt_q1", context="q1"),
             qe_q1=_optional_float(data, "qe_q1", context="q1"),
+            qe_raw_q1=_optional_float(data, "qe_raw_q1", context="q1"),
+            metricx_q1_clamped=_optional_bool(data, "metricx_q1_clamped", context="q1"),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -232,6 +261,8 @@ class Q1Row:
             "metadata": self.metadata.to_dict(),
             "mt_q1": self.mt_q1,
             "qe_q1": self.qe_q1,
+            "qe_raw_q1": self.qe_raw_q1,
+            "metricx_q1_clamped": self.metricx_q1_clamped,
         }
 
 
@@ -244,14 +275,31 @@ class Q2Row:
     mt_q2: str
     mt_q1: str | None = None
     qe_q1: float | None = None
+    qe_raw_q1: float | None = None
+    metricx_q1_clamped: bool | None = None
     qe_q2: float | None = None
+    qe_raw_q2: float | None = None
+    metricx_q2_clamped: bool | None = None
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> "Q2Row":
         data = _ensure_mapping(data, context="q2")
         _reject_extra_keys(
             data,
-            allowed={"id", "dataset", "source", "metadata", "mt_q1", "mt_q2", "qe_q1", "qe_q2"},
+            allowed={
+                "id",
+                "dataset",
+                "source",
+                "metadata",
+                "mt_q1",
+                "mt_q2",
+                "qe_q1",
+                "qe_raw_q1",
+                "metricx_q1_clamped",
+                "qe_q2",
+                "qe_raw_q2",
+                "metricx_q2_clamped",
+            },
             context="q2",
         )
         return cls(
@@ -262,7 +310,11 @@ class Q2Row:
             mt_q2=_require_str(data, "mt_q2", context="q2"),
             mt_q1=_optional_str(data, "mt_q1", context="q2"),
             qe_q1=_optional_float(data, "qe_q1", context="q2"),
+            qe_raw_q1=_optional_float(data, "qe_raw_q1", context="q2"),
+            metricx_q1_clamped=_optional_bool(data, "metricx_q1_clamped", context="q2"),
             qe_q2=_optional_float(data, "qe_q2", context="q2"),
+            qe_raw_q2=_optional_float(data, "qe_raw_q2", context="q2"),
+            metricx_q2_clamped=_optional_bool(data, "metricx_q2_clamped", context="q2"),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -274,7 +326,11 @@ class Q2Row:
             "mt_q1": self.mt_q1,
             "mt_q2": self.mt_q2,
             "qe_q1": self.qe_q1,
+            "qe_raw_q1": self.qe_raw_q1,
+            "metricx_q1_clamped": self.metricx_q1_clamped,
             "qe_q2": self.qe_q2,
+            "qe_raw_q2": self.qe_raw_q2,
+            "metricx_q2_clamped": self.metricx_q2_clamped,
         }
 
 
@@ -288,7 +344,16 @@ class ScoredRow:
     mt_q1: str | None = None
     mt_q2: str | None = None
     qe_q1: float | None = None
+    qe_raw_q1: float | None = None
+    metricx_q1_clamped: bool | None = None
     qe_q2: float | None = None
+    qe_raw_q2: float | None = None
+    metricx_q2_clamped: bool | None = None
+    delta_qe: float | None = None
+    collapse_term: float | None = None
+    difficulty_term: float | None = None
+    collapse_z: float | None = None
+    difficulty_z: float | None = None
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> "ScoredRow":
@@ -303,7 +368,16 @@ class ScoredRow:
                 "mt_q1",
                 "mt_q2",
                 "qe_q1",
+                "qe_raw_q1",
+                "metricx_q1_clamped",
                 "qe_q2",
+                "qe_raw_q2",
+                "metricx_q2_clamped",
+                "delta_qe",
+                "collapse_term",
+                "difficulty_term",
+                "collapse_z",
+                "difficulty_z",
                 "score_s",
             },
             context="scored",
@@ -317,7 +391,16 @@ class ScoredRow:
             mt_q1=_optional_str(data, "mt_q1", context="scored"),
             mt_q2=_optional_str(data, "mt_q2", context="scored"),
             qe_q1=_optional_float(data, "qe_q1", context="scored"),
+            qe_raw_q1=_optional_float(data, "qe_raw_q1", context="scored"),
+            metricx_q1_clamped=_optional_bool(data, "metricx_q1_clamped", context="scored"),
             qe_q2=_optional_float(data, "qe_q2", context="scored"),
+            qe_raw_q2=_optional_float(data, "qe_raw_q2", context="scored"),
+            metricx_q2_clamped=_optional_bool(data, "metricx_q2_clamped", context="scored"),
+            delta_qe=_optional_float(data, "delta_qe", context="scored"),
+            collapse_term=_optional_float(data, "collapse_term", context="scored"),
+            difficulty_term=_optional_float(data, "difficulty_term", context="scored"),
+            collapse_z=_optional_float(data, "collapse_z", context="scored"),
+            difficulty_z=_optional_float(data, "difficulty_z", context="scored"),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -330,7 +413,16 @@ class ScoredRow:
             "mt_q1": self.mt_q1,
             "mt_q2": self.mt_q2,
             "qe_q1": self.qe_q1,
+            "qe_raw_q1": self.qe_raw_q1,
+            "metricx_q1_clamped": self.metricx_q1_clamped,
             "qe_q2": self.qe_q2,
+            "qe_raw_q2": self.qe_raw_q2,
+            "metricx_q2_clamped": self.metricx_q2_clamped,
+            "delta_qe": self.delta_qe,
+            "collapse_term": self.collapse_term,
+            "difficulty_term": self.difficulty_term,
+            "collapse_z": self.collapse_z,
+            "difficulty_z": self.difficulty_z,
         }
 
 
@@ -342,10 +434,20 @@ class SelectedRow:
     metadata: RowMetadata
     score_s: float
     selection_rank: int
+    selection_rule: str | None = None
     mt_q1: str | None = None
     mt_q2: str | None = None
     qe_q1: float | None = None
+    qe_raw_q1: float | None = None
+    metricx_q1_clamped: bool | None = None
     qe_q2: float | None = None
+    qe_raw_q2: float | None = None
+    metricx_q2_clamped: bool | None = None
+    delta_qe: float | None = None
+    collapse_term: float | None = None
+    difficulty_term: float | None = None
+    collapse_z: float | None = None
+    difficulty_z: float | None = None
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> "SelectedRow":
@@ -359,10 +461,20 @@ class SelectedRow:
                 "metadata",
                 "score_s",
                 "selection_rank",
+                "selection_rule",
                 "mt_q1",
                 "mt_q2",
                 "qe_q1",
+                "qe_raw_q1",
+                "metricx_q1_clamped",
                 "qe_q2",
+                "qe_raw_q2",
+                "metricx_q2_clamped",
+                "delta_qe",
+                "collapse_term",
+                "difficulty_term",
+                "collapse_z",
+                "difficulty_z",
             },
             context="selected",
         )
@@ -376,10 +488,20 @@ class SelectedRow:
             metadata=RowMetadata.from_dict(_ensure_mapping(_require_key(data, "metadata", context="selected"), context="metadata")),
             score_s=_require_float(data, "score_s", context="selected"),
             selection_rank=selection_rank,
+            selection_rule=_optional_str(data, "selection_rule", context="selected"),
             mt_q1=_optional_str(data, "mt_q1", context="selected"),
             mt_q2=_optional_str(data, "mt_q2", context="selected"),
             qe_q1=_optional_float(data, "qe_q1", context="selected"),
+            qe_raw_q1=_optional_float(data, "qe_raw_q1", context="selected"),
+            metricx_q1_clamped=_optional_bool(data, "metricx_q1_clamped", context="selected"),
             qe_q2=_optional_float(data, "qe_q2", context="selected"),
+            qe_raw_q2=_optional_float(data, "qe_raw_q2", context="selected"),
+            metricx_q2_clamped=_optional_bool(data, "metricx_q2_clamped", context="selected"),
+            delta_qe=_optional_float(data, "delta_qe", context="selected"),
+            collapse_term=_optional_float(data, "collapse_term", context="selected"),
+            difficulty_term=_optional_float(data, "difficulty_term", context="selected"),
+            collapse_z=_optional_float(data, "collapse_z", context="selected"),
+            difficulty_z=_optional_float(data, "difficulty_z", context="selected"),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -390,91 +512,317 @@ class SelectedRow:
             "metadata": self.metadata.to_dict(),
             "score_s": self.score_s,
             "selection_rank": self.selection_rank,
+            "selection_rule": self.selection_rule,
             "mt_q1": self.mt_q1,
             "mt_q2": self.mt_q2,
             "qe_q1": self.qe_q1,
+            "qe_raw_q1": self.qe_raw_q1,
+            "metricx_q1_clamped": self.metricx_q1_clamped,
             "qe_q2": self.qe_q2,
+            "qe_raw_q2": self.qe_raw_q2,
+            "metricx_q2_clamped": self.metricx_q2_clamped,
+            "delta_qe": self.delta_qe,
+            "collapse_term": self.collapse_term,
+            "difficulty_term": self.difficulty_term,
+            "collapse_z": self.collapse_z,
+            "difficulty_z": self.difficulty_z,
+        }
+
+
+@dataclass(frozen=True)
+class ApiSelection:
+    score_s: float
+    qe_q1: float
+    qe_q2: float
+    delta_qe: float | None = None
+    collapse_term: float | None = None
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> "ApiSelection":
+        data = _ensure_mapping(data, context="api_selection")
+        _reject_extra_keys(
+            data,
+            allowed={"score_s", "qe_q1", "qe_q2", "delta_qe", "collapse_term"},
+            context="api_selection",
+        )
+        return cls(
+            score_s=_require_float(data, "score_s", context="api_selection"),
+            qe_q1=_require_float(data, "qe_q1", context="api_selection"),
+            qe_q2=_require_float(data, "qe_q2", context="api_selection"),
+            delta_qe=_optional_float(data, "delta_qe", context="api_selection"),
+            collapse_term=_optional_float(data, "collapse_term", context="api_selection"),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "score_s": self.score_s,
+            "qe_q1": self.qe_q1,
+            "qe_q2": self.qe_q2,
+            "delta_qe": self.delta_qe,
+            "collapse_term": self.collapse_term,
         }
 
 
 @dataclass(frozen=True)
 class ApiRequestRow:
     id: str
+    row_id: str
     dataset: str
     source: str
     metadata: RowMetadata
     request_id: str
+    run_id: str
+    subset_idx: int
     student: str
+    selection: ApiSelection
+    prompt_version: str
+    prompt_hash: str
+    provider: str
+    model: str
     status: StatusValue
+    config_hash: str
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> "ApiRequestRow":
         data = _ensure_mapping(data, context="api_requests")
         _reject_extra_keys(
             data,
-            allowed={"id", "dataset", "source", "metadata", "request_id", "student", "status"},
+            allowed={
+                "id",
+                "row_id",
+                "dataset",
+                "source",
+                "metadata",
+                "request_id",
+                "run_id",
+                "subset_idx",
+                "student",
+                "selection",
+                "prompt_version",
+                "prompt_hash",
+                "provider",
+                "model",
+                "status",
+                "config_hash",
+            },
             context="api_requests",
         )
         return cls(
             id=_require_str(data, "id", context="api_requests"),
+            row_id=_require_str(data, "row_id", context="api_requests"),
             dataset=_require_str(data, "dataset", context="api_requests"),
             source=_require_str(data, "source", context="api_requests"),
             metadata=RowMetadata.from_dict(_ensure_mapping(_require_key(data, "metadata", context="api_requests"), context="metadata")),
             request_id=_require_str(data, "request_id", context="api_requests"),
+            run_id=_require_str(data, "run_id", context="api_requests"),
+            subset_idx=_require_int(data, "subset_idx", context="api_requests"),
             student=_require_str(data, "student", context="api_requests"),
+            selection=ApiSelection.from_dict(
+                _ensure_mapping(_require_key(data, "selection", context="api_requests"), context="api_selection")
+            ),
+            prompt_version=_require_str(data, "prompt_version", context="api_requests"),
+            prompt_hash=_require_str(data, "prompt_hash", context="api_requests"),
+            provider=_require_str(data, "provider", context="api_requests"),
+            model=_require_str(data, "model", context="api_requests"),
             status=_require_status(data, "status", context="api_requests"),
+            config_hash=_require_str(data, "config_hash", context="api_requests"),
         )
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "id": self.id,
+            "row_id": self.row_id,
             "dataset": self.dataset,
             "source": self.source,
             "metadata": self.metadata.to_dict(),
             "request_id": self.request_id,
+            "run_id": self.run_id,
+            "subset_idx": self.subset_idx,
             "student": self.student,
+            "selection": self.selection.to_dict(),
+            "prompt_version": self.prompt_version,
+            "prompt_hash": self.prompt_hash,
+            "provider": self.provider,
+            "model": self.model,
             "status": self.status,
+            "config_hash": self.config_hash,
+        }
+
+
+@dataclass(frozen=True)
+class ApiUsage:
+    input_tokens: int
+    output_tokens: int
+    total_tokens: int
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> "ApiUsage":
+        data = _ensure_mapping(data, context="api_usage")
+        _reject_extra_keys(
+            data,
+            allowed={"input_tokens", "output_tokens", "total_tokens"},
+            context="api_usage",
+        )
+        return cls(
+            input_tokens=_require_int(data, "input_tokens", context="api_usage"),
+            output_tokens=_require_int(data, "output_tokens", context="api_usage"),
+            total_tokens=_require_int(data, "total_tokens", context="api_usage"),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "input_tokens": self.input_tokens,
+            "output_tokens": self.output_tokens,
+            "total_tokens": self.total_tokens,
+        }
+
+
+@dataclass(frozen=True)
+class ApiCost:
+    currency: str
+    estimated: float
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> "ApiCost":
+        data = _ensure_mapping(data, context="api_cost")
+        _reject_extra_keys(data, allowed={"currency", "estimated"}, context="api_cost")
+        return cls(
+            currency=_require_str(data, "currency", context="api_cost"),
+            estimated=_require_float(data, "estimated", context="api_cost"),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "currency": self.currency,
+            "estimated": self.estimated,
         }
 
 
 @dataclass(frozen=True)
 class ApiRow:
     id: str
+    row_id: str
     dataset: str
     source: str
     metadata: RowMetadata
     request_id: str
-    gold: str
+    run_id: str
+    subset_idx: int
+    provider: str
+    model: str
     status: StatusValue
+    teacher_label: str
+    student: str
+    gold: str | None = None
+    reason: str | None = None
+    prompt_version: str | None = None
+    prompt_hash: str | None = None
+    usage: ApiUsage | None = None
+    cost: ApiCost | None = None
+    latency_ms: float | None = None
+    attempt: int | None = None
+    error: str | None = None
+    config_hash: str | None = None
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> "ApiRow":
         data = _ensure_mapping(data, context="api")
         _reject_extra_keys(
             data,
-            allowed={"id", "dataset", "source", "metadata", "request_id", "gold", "status"},
+            allowed={
+                "id",
+                "row_id",
+                "dataset",
+                "source",
+                "metadata",
+                "request_id",
+                "run_id",
+                "subset_idx",
+                "provider",
+                "model",
+                "status",
+                "teacher_label",
+                "student",
+                "gold",
+                "reason",
+                "prompt_version",
+                "prompt_hash",
+                "usage",
+                "cost",
+                "latency_ms",
+                "attempt",
+                "error",
+                "config_hash",
+            },
             context="api",
         )
         status = _require_status(data, "status", context="api")
+        gold = _optional_str(data, "gold", context="api")
+        if status == "ok" and (gold is None or not gold.strip()):
+            raise SchemaValidationError("api.gold is required when api.status=ok")
+        reason = _optional_str(data, "reason", context="api")
+        if status != "ok" and (reason is None or not reason.strip()):
+            raise SchemaValidationError("api.reason is required when api.status!=ok")
+
+        usage_data = data.get("usage")
+        usage = None
+        if usage_data is not None:
+            usage = ApiUsage.from_dict(_ensure_mapping(usage_data, context="api_usage"))
+        cost_data = data.get("cost")
+        cost = None
+        if cost_data is not None:
+            cost = ApiCost.from_dict(_ensure_mapping(cost_data, context="api_cost"))
         return cls(
             id=_require_str(data, "id", context="api"),
+            row_id=_require_str(data, "row_id", context="api"),
             dataset=_require_str(data, "dataset", context="api"),
             source=_require_str(data, "source", context="api"),
             metadata=RowMetadata.from_dict(_ensure_mapping(_require_key(data, "metadata", context="api"), context="metadata")),
             request_id=_require_str(data, "request_id", context="api"),
-            gold=_require_str(data, "gold", context="api"),
+            run_id=_require_str(data, "run_id", context="api"),
+            subset_idx=_require_int(data, "subset_idx", context="api"),
+            provider=_require_str(data, "provider", context="api"),
+            model=_require_str(data, "model", context="api"),
             status=status,
+            teacher_label=_require_str(data, "teacher_label", context="api"),
+            student=_require_str(data, "student", context="api"),
+            gold=gold,
+            reason=reason,
+            prompt_version=_optional_str(data, "prompt_version", context="api"),
+            prompt_hash=_optional_str(data, "prompt_hash", context="api"),
+            usage=usage,
+            cost=cost,
+            latency_ms=_optional_float(data, "latency_ms", context="api"),
+            attempt=_optional_int(data, "attempt", context="api"),
+            error=_optional_str(data, "error", context="api"),
+            config_hash=_optional_str(data, "config_hash", context="api"),
         )
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "id": self.id,
+            "row_id": self.row_id,
             "dataset": self.dataset,
             "source": self.source,
             "metadata": self.metadata.to_dict(),
             "request_id": self.request_id,
+            "run_id": self.run_id,
+            "subset_idx": self.subset_idx,
+            "provider": self.provider,
+            "model": self.model,
+            "teacher_label": self.teacher_label,
+            "student": self.student,
             "gold": self.gold,
             "status": self.status,
+            "reason": self.reason,
+            "prompt_version": self.prompt_version,
+            "prompt_hash": self.prompt_hash,
+            "usage": self.usage.to_dict() if self.usage is not None else None,
+            "cost": self.cost.to_dict() if self.cost is not None else None,
+            "latency_ms": self.latency_ms,
+            "attempt": self.attempt,
+            "error": self.error,
+            "config_hash": self.config_hash,
         }
 
 

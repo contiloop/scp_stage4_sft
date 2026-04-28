@@ -319,9 +319,45 @@ def run_smoke(
 
     write_jsonl(subset_root / "input.jsonl", input_rows)
     write_jsonl(subset_root / "q1.jsonl", q1_rows)
+    collapse_dir = subset_root / "collapse_adapter"
+    collapse_dir.mkdir(parents=True, exist_ok=True)
+    (collapse_dir / "collapse_state.json").write_text(
+        json.dumps(
+            {
+                "status": "ok",
+                "adapter_path": str(collapse_dir),
+                "run_id": run_id,
+                "subset_idx": 0,
+                "trained_rows": len(q1_rows),
+                "runtime_mode": "mock",
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
     write_jsonl(subset_root / "q2.jsonl", q2_rows)
     write_jsonl(subset_root / "scored.jsonl", scored_rows)
     write_jsonl(subset_root / "selected.jsonl", selected_rows)
+    (subset_root / "clean_base.json").write_text(
+        json.dumps(
+            {
+                "status": "ok",
+                "collapse_adapter": str(collapse_dir),
+                "run_id": run_id,
+                "subset_idx": 0,
+                "verified_rows": len(q2_rows),
+                "runtime_mode": "mock",
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
     write_jsonl(subset_root / "api_requests.jsonl", api_requests)
     write_jsonl(subset_root / "api.jsonl", api_rows)
     write_jsonl(subset_root / "train_final" / "train_rows.jsonl", train_rows)
@@ -339,9 +375,10 @@ def run_smoke(
 
     phase_artifacts = (
         ("infer-q1", "subsets/subset_000/q1.jsonl"),
-        ("train-collapse-lora", "subsets/subset_000/train_final"),
+        ("train-collapse-lora", "subsets/subset_000/collapse_adapter/collapse_state.json"),
         ("infer-q2", "subsets/subset_000/q2.jsonl"),
         ("score", "subsets/subset_000/scored.jsonl"),
+        ("unload-collapse-lora", "subsets/subset_000/clean_base.json"),
         ("call-api", "subsets/subset_000/api.jsonl"),
         ("update-base", "subsets/subset_000/train_final/train_rows.jsonl"),
     )
@@ -366,9 +403,11 @@ def run_smoke(
         "counts": {
             "input": len(input_rows),
             "q1": len(q1_rows),
+            "collapse_train": len(q1_rows),
             "q2": len(q2_rows),
             "scored": len(scored_rows),
             "selected": len(selected_rows),
+            "clean_base": 1,
             "api_requests": len(api_requests),
             "api": len(api_rows),
             "train": len(train_rows),

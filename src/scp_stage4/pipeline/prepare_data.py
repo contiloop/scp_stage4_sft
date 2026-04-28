@@ -7,8 +7,9 @@ import csv
 import json
 import math
 import random
+import re
 from pathlib import Path
-from typing import Any, Iterable, Mapping
+from typing import Any, Callable, Iterable, Mapping
 
 from scp_stage4.config.loader import compose_config
 from scp_stage4.config.validator import validate_config
@@ -64,17 +65,14 @@ def _fallback_raw_rows(dataset_name: str) -> list[dict[str, Any]]:
             {
                 "id": f"{dataset_name}:{idx:06d}",
                 "dataset": dataset_name,
-                "source_text": (
-                    f"{dataset_name} source sentence {idx} with deterministic fixture text "
-                    f"for local prepare-data contract checks."
-                ),
+                "source_text": f"Fixture sentence number {idx} for checks.",
                 "title": f"{dataset_name} title {idx}",
             }
         )
     return rows
 
 
-def _load_raw_rows(data_cfg: Mapping[str, Any]) -> list[dict[str, Any]]:
+def _fixture_raw_rows(data_cfg: Mapping[str, Any]) -> list[dict[str, Any]]:
     candidates = [
         Path("tests/fixtures/raw.train.jsonl"),
         Path("tests/fixtures/input.happy.jsonl"),
@@ -91,6 +89,102 @@ def _load_raw_rows(data_cfg: Mapping[str, Any]) -> list[dict[str, Any]]:
         if isinstance(first, Mapping):
             dataset_name = str(first.get("name", dataset_name))
     return _fallback_raw_rows(dataset_name)
+
+
+def _load_local_jsonl_rows(data_cfg: Mapping[str, Any]) -> list[dict[str, Any]]:
+    runtime_cfg = data_cfg.get("runtime", {})
+    if not isinstance(runtime_cfg, Mapping):
+        raise PrepareDataError("data.runtime must be a mapping")
+    path_value = runtime_cfg.get("local_jsonl_path")
+    if not isinstance(path_value, str) or not path_value.strip():
+        raise PrepareDataError(
+            "data.runtime.local_jsonl_path is required when data.runtime.mode=local_jsonl"
+        )
+    path = Path(path_value)
+    if not path.exists():
+        raise PrepareDataError(f"local JSONL dataset not found: {path}")
+    return [dict(row) for row in read_jsonl(path)]
+
+
+def _load_hf_rows(data_cfg: Mapping[str, Any]) -> list[dict[str, Any]]:
+    try:
+        from datasets import load_dataset  # type: ignore
+    except ModuleNotFoundError as exc:
+        raise PrepareDataError(
+            "data.runtime.mode=hf requires the Hugging Face 'datasets' package"
+        ) from exc
+
+    runtime_cfg = data_cfg.get("runtime", {})
+    if not isinstance(runtime_cfg, Mapping):
+        runtime_cfg = {}
+    hf_cfg = runtime_cfg.get("hf", {})
+    if not isinstance(hf_cfg, Mapping):
+        hf_cfg = {}
+
+    streaming = bool(hf_cfg.get("streaming", False))
+    max_rows_raw = hf_cfg.get("max_rows_per_dataset")
+    max_rows_per_dataset = int(max_rows_raw) if max_rows_raw is not None else None
+
+    dataset_specs = data_cfg.get("datasets")
+    if not isinstance(dataset_specs, list) or not dataset_specs:
+        raise PrepareDataError("data.datasets must be a non-empty list for HF loading")
+
+    loaded_rows: list[dict[str, Any]] = []
+    for dataset_index, spec in enumerate(dataset_specs):
+        if not isinstance(spec, Mapping):
+            raise PrepareDataError(f"data.datasets[{dataset_index}] must be a mapping")
+        name = str(spec.get("name", "")).strip()
+        if not name:
+            raise PrepareDataError(f"data.datasets[{dataset_index}].name is required")
+        split = str(spec.get("split", "train"))
+
+        load_kwargs: dict[str, Any] = {
+            "split": split,
+            "streaming": streaming,
+        }
+        for optional_key in (
+            "data_dir",
+            "data_files",
+            "revision",
+            "trust_remote_code",
+        ):
+            if optional_key in spec:
+                load_kwargs[optional_key] = spec[optional_key]
+
+        config_name = spec.get("config_name")
+        if isinstance(config_name, str) and config_name.strip():
+            dataset = load_dataset(name, config_name, **load_kwargs)
+        else:
+            dataset = load_dataset(name, **load_kwargs)
+
+        for row_index, raw_row in enumerate(dataset):
+            if max_rows_per_dataset is not None and row_index >= max_rows_per_dataset:
+                break
+            if not isinstance(raw_row, Mapping):
+                continue
+            row = dict(raw_row)
+            row.setdefault("dataset", name)
+            raw_id = row.get("id") or row.get("_id") or row.get("doc_id")
+            row["id"] = str(raw_id) if raw_id is not None else f"{name}:{row_index:08d}"
+            loaded_rows.append(row)
+
+    if not loaded_rows:
+        raise PrepareDataError("HF loading produced zero rows")
+    return loaded_rows
+
+
+def _load_raw_rows(data_cfg: Mapping[str, Any]) -> list[dict[str, Any]]:
+    runtime_cfg = data_cfg.get("runtime", {})
+    if not isinstance(runtime_cfg, Mapping):
+        runtime_cfg = {}
+    mode = str(runtime_cfg.get("mode", "fixture"))
+    if mode == "fixture":
+        return _fixture_raw_rows(data_cfg)
+    if mode == "local_jsonl":
+        return _load_local_jsonl_rows(data_cfg)
+    if mode == "hf":
+        return _load_hf_rows(data_cfg)
+    raise PrepareDataError(f"Unsupported data.runtime.mode: {mode}")
 
 
 def _normalize_rows(raw_rows: list[dict[str, Any]], data_cfg: Mapping[str, Any]) -> list[dict[str, Any]]:
@@ -192,23 +286,190 @@ def _estimate_tokens(text: str) -> int:
     return len(text.split())
 
 
+def _build_token_counter(cfg: Mapping[str, Any]) -> Callable[[str], int]:
+    data_cfg = cfg.get("data", {})
+    if not isinstance(data_cfg, Mapping):
+        data_cfg = {}
+    length_cfg = data_cfg.get("length", {})
+    if not isinstance(length_cfg, Mapping):
+        length_cfg = {}
+
+    mode = str(length_cfg.get("mode", "whitespace"))
+    if mode != "tokenizer":
+        return _estimate_tokens
+
+    model_cfg = cfg.get("model", {})
+    if not isinstance(model_cfg, Mapping):
+        model_cfg = {}
+    tokenizer_name = length_cfg.get("tokenizer_name") or model_cfg.get("name")
+    fallback = str(length_cfg.get("tokenizer_fallback", "whitespace"))
+    local_files_only = bool(length_cfg.get("tokenizer_local_files_only", False))
+    trust_remote_code = bool(model_cfg.get("trust_remote_code", False))
+
+    try:
+        from transformers import AutoTokenizer  # type: ignore
+
+        tokenizer = AutoTokenizer.from_pretrained(
+            str(tokenizer_name),
+            trust_remote_code=trust_remote_code,
+            local_files_only=local_files_only,
+        )
+    except Exception as exc:
+        if fallback == "whitespace":
+            return _estimate_tokens
+        raise PrepareDataError(
+            "tokenizer length mode requires a loadable Hugging Face tokenizer; "
+            f"failed to load {tokenizer_name!r}"
+        ) from exc
+
+    def count_tokens(text: str) -> int:
+        return len(tokenizer.encode(text, add_special_tokens=False))
+
+    return count_tokens
+
+
+_SENTENCE_RE = re.compile(r"[^.!?。！？\n]+[.!?。！？]?(?:\s+|$)|[^\n]+(?:\n|$)")
+
+
+def _sentence_units(text: str) -> list[str]:
+    units = [_normalize_whitespace(match.group(0)) for match in _SENTENCE_RE.finditer(text)]
+    return [unit for unit in units if unit]
+
+
+def _split_long_source(
+    row: Mapping[str, Any],
+    *,
+    token_count: Callable[[str], int],
+    max_tokens_per_chunk: int,
+    max_chunks: int,
+    fallback_for_long_sentence: str,
+    on_max_chunks_exceeded: str,
+) -> list[dict[str, Any]]:
+    source = str(row["source"])
+    chunks: list[str] = []
+    current: list[str] = []
+
+    def flush_current() -> None:
+        if current:
+            chunks.append(_normalize_whitespace(" ".join(current)))
+            current.clear()
+
+    for sentence in _sentence_units(source):
+        sentence_tokens = token_count(sentence)
+        if sentence_tokens > max_tokens_per_chunk:
+            flush_current()
+            if fallback_for_long_sentence == "truncate":
+                chunks.append(" ".join(sentence.split()[:max_tokens_per_chunk]))
+            elif fallback_for_long_sentence == "split":
+                words = sentence.split()
+                for start in range(0, len(words), max_tokens_per_chunk):
+                    chunks.append(" ".join(words[start : start + max_tokens_per_chunk]))
+            else:
+                return []
+            continue
+
+        candidate = _normalize_whitespace(" ".join([*current, sentence]))
+        if current and token_count(candidate) > max_tokens_per_chunk:
+            flush_current()
+        current.append(sentence)
+    flush_current()
+
+    chunks = [chunk for chunk in chunks if chunk]
+    if len(chunks) > max_chunks:
+        if on_max_chunks_exceeded == "error":
+            raise PrepareDataError(f"row {row['id']} exceeded max_chunks_per_row={max_chunks}")
+        return []
+
+    out_rows: list[dict[str, Any]] = []
+    for chunk_idx, chunk in enumerate(chunks):
+        out = dict(row)
+        out["id"] = f"{row['id']}__chunk_{chunk_idx}"
+        out["source"] = chunk
+        metadata = dict(row.get("metadata", {}))
+        metadata["parent_id"] = row["id"]
+        metadata["chunk_idx"] = chunk_idx
+        out["metadata"] = metadata
+        out_rows.append(out)
+    return out_rows
+
+
+def _resolved_runtime_token_limits(cfg: Mapping[str, Any]) -> tuple[int, int]:
+    data_cfg = cfg.get("data", {})
+    if not isinstance(data_cfg, Mapping):
+        data_cfg = {}
+    length_cfg = data_cfg.get("length", {})
+    if not isinstance(length_cfg, Mapping):
+        length_cfg = {}
+
+    model_cfg = cfg.get("model", {})
+    if not isinstance(model_cfg, Mapping):
+        model_cfg = {}
+
+    model_max_length = int(model_cfg.get("max_length", 0))
+    model_max_seq_length = int(model_cfg.get("max_seq_length", model_max_length))
+    max_total_tokens = int(length_cfg.get("max_total_tokens", model_max_length))
+    runtime_max_total = min(model_max_length, model_max_seq_length, max_total_tokens)
+
+    prompt_template_tokens = int(length_cfg.get("prompt_template_tokens", 0))
+    safety_margin_tokens = int(length_cfg.get("safety_margin_tokens", 0))
+    min_available_output_tokens = int(length_cfg.get("min_available_output_tokens", 0))
+    max_source_tokens = int(length_cfg.get("max_source_tokens", 0))
+
+    source_budget_by_context = (
+        runtime_max_total
+        - prompt_template_tokens
+        - safety_margin_tokens
+        - min_available_output_tokens
+    )
+    effective_max_source_tokens = min(max_source_tokens, source_budget_by_context)
+    if effective_max_source_tokens <= 0:
+        raise PrepareDataError(
+            "length policy is unsatisfiable: "
+            "max_total_tokens - prompt_template_tokens - safety_margin_tokens - "
+            "min_available_output_tokens must be > 0"
+        )
+    return runtime_max_total, effective_max_source_tokens
+
+
 def _apply_length_policy(rows: list[dict[str, Any]], cfg: Mapping[str, Any]) -> list[dict[str, Any]]:
-    length_cfg = cfg.get("length", {})
+    data_cfg = cfg.get("data", {})
+    if not isinstance(data_cfg, Mapping):
+        data_cfg = {}
+    length_cfg = data_cfg.get("length", {})
     if not isinstance(length_cfg, Mapping) or not bool(length_cfg.get("enabled", True)):
         return rows
 
-    max_source_tokens = int(length_cfg.get("max_source_tokens", 4000))
+    runtime_max_total, effective_max_source_tokens = _resolved_runtime_token_limits(cfg)
+    prompt_template_tokens = int(length_cfg.get("prompt_template_tokens", 0))
+    safety_margin_tokens = int(length_cfg.get("safety_margin_tokens", 0))
+    min_available_output_tokens = int(length_cfg.get("min_available_output_tokens", 0))
     overflow = str(length_cfg.get("overflow", "split"))
     split_cfg = length_cfg.get("split", {})
     if not isinstance(split_cfg, Mapping):
         split_cfg = {}
     max_chunks = int(split_cfg.get("max_chunks_per_row", 4))
+    max_tokens_per_chunk = int(
+        split_cfg.get("max_source_tokens_per_chunk", effective_max_source_tokens)
+    )
+    max_tokens_per_chunk = min(max_tokens_per_chunk, effective_max_source_tokens)
+    fallback_for_long_sentence = str(split_cfg.get("fallback_for_long_sentence", "skip"))
+    on_max_chunks_exceeded = str(split_cfg.get("on_max_chunks_exceeded", "skip"))
+    token_count = _build_token_counter(cfg)
 
     filtered: list[dict[str, Any]] = []
     for row in rows:
         source = str(row["source"])
-        tokens = _estimate_tokens(source)
-        if tokens <= max_source_tokens:
+        source_tokens = token_count(source)
+        available_output_budget = (
+            runtime_max_total
+            - prompt_template_tokens
+            - source_tokens
+            - safety_margin_tokens
+        )
+        if (
+            source_tokens <= effective_max_source_tokens
+            and available_output_budget >= min_available_output_tokens
+        ):
             filtered.append(row)
             continue
 
@@ -217,29 +478,30 @@ def _apply_length_policy(rows: list[dict[str, Any]], cfg: Mapping[str, Any]) -> 
 
         if overflow == "truncate":
             words = source.split()
-            truncated = " ".join(words[:max_source_tokens])
+            truncated = " ".join(words[:effective_max_source_tokens])
             out = dict(row)
             out["source"] = truncated
-            filtered.append(out)
+            truncated_tokens = token_count(truncated)
+            available_after_truncation = (
+                runtime_max_total
+                - prompt_template_tokens
+                - truncated_tokens
+                - safety_margin_tokens
+            )
+            if available_after_truncation >= min_available_output_tokens:
+                filtered.append(out)
             continue
 
-        # overflow == split
-        words = source.split()
-        chunk_size = max(1, max_source_tokens)
-        for chunk_idx, start in enumerate(range(0, len(words), chunk_size)):
-            if chunk_idx >= max_chunks:
-                break
-            chunk_words = words[start : start + chunk_size]
-            if not chunk_words:
-                continue
-            out = dict(row)
-            out["id"] = f"{row['id']}__chunk_{chunk_idx}"
-            out["source"] = " ".join(chunk_words)
-            metadata = dict(row.get("metadata", {}))
-            metadata["parent_id"] = row["id"]
-            metadata["chunk_idx"] = chunk_idx
-            out["metadata"] = metadata
-            filtered.append(out)
+        filtered.extend(
+            _split_long_source(
+                row,
+                token_count=token_count,
+                max_tokens_per_chunk=max_tokens_per_chunk,
+                max_chunks=max_chunks,
+                fallback_for_long_sentence=fallback_for_long_sentence,
+                on_max_chunks_exceeded=on_max_chunks_exceeded,
+            )
+        )
 
     return validate_artifact_rows(filtered, "normalized")
 
@@ -336,7 +598,7 @@ def run_prepare_data(
 
     raw_rows = _load_raw_rows(data_cfg)
     normalized = _normalize_rows(raw_rows, data_cfg)
-    normalized = _apply_length_policy(normalized, data_cfg)
+    normalized = _apply_length_policy(normalized, cfg)
 
     split_cfg = data_cfg.get("split", {})
     if not isinstance(split_cfg, Mapping):

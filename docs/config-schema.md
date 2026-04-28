@@ -194,6 +194,7 @@ data:
     max_total_tokens: 8192
     max_source_tokens: 4000
     max_output_tokens: 4096
+    prompt_template_tokens: 256
     min_available_output_tokens: 768
     safety_margin_tokens: 64
     overflow: split
@@ -231,9 +232,10 @@ The validator must check:
 - `data.length.max_total_tokens <= resolved model.max_seq_length`
 - `data.length.max_source_tokens > 0`
 - `data.length.max_output_tokens > 0`
+- `data.length.prompt_template_tokens >= 0`
 - `data.length.min_available_output_tokens > 0`
 - `data.length.safety_margin_tokens >= 0`
-- `data.length.max_source_tokens + data.length.min_available_output_tokens + data.length.safety_margin_tokens <= data.length.max_total_tokens`
+- `data.length.max_source_tokens + data.length.min_available_output_tokens + data.length.prompt_template_tokens + data.length.safety_margin_tokens <= data.length.max_total_tokens`
 
 Runtime budget calculation:
 
@@ -548,6 +550,15 @@ Rules:
 - `managed_install: false` means the runtime expects `COMET_PYTHON` and/or `METRICX_PYTHON` to point to an existing venv
 - `shared_venv_allowed: true` allows both env vars to point to the same Python binary, as in the PoC setup
 - QE runtime details belong in `docs/qe-isolation.md`
+
+Subprocess worker CLI contract:
+
+- when `*.runtime.mode: subprocess`, the runner calls workers with:
+  - `--input` and `--output`
+  - `--effective-config` and `--config-hash`
+  - `--run-id`, `--subset-idx`, `--section`, `--phase`
+- workers should validate required request fields and required response fields per phase before writing output JSONL
+- missing required response keys must fail the worker with non-zero exit code
 
 ---
 

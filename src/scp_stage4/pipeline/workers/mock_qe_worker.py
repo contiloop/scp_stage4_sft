@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
-import argparse
 import hashlib
 from typing import Any
 
 from scp_stage4.data import read_jsonl, write_jsonl
+from scp_stage4.pipeline.workers.common import (
+    parse_worker_args,
+    validate_phase_request_rows,
+    validate_phase_response_rows,
+)
 
 
 def _stable_fraction(text: str) -> float:
@@ -25,12 +29,10 @@ def _score_for_row(row: dict[str, Any]) -> float:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Mock QE worker")
-    parser.add_argument("--input", required=True)
-    parser.add_argument("--output", required=True)
-    args = parser.parse_args(argv)
+    args = parse_worker_args(description="Mock QE worker", argv=argv)
 
-    requests = read_jsonl(args.input)
+    requests = read_jsonl(args.input_path)
+    schema = validate_phase_request_rows(requests, args=args, context="qe")
     responses = []
     for row in requests:
         req_id = str(row.get("id", ""))
@@ -47,7 +49,8 @@ def main(argv: list[str] | None = None) -> int:
             }
         )
 
-    write_jsonl(args.output, responses, ensure_ascii=False)
+    validate_phase_response_rows(responses, schema=schema, context="qe")
+    write_jsonl(args.output_path, responses, ensure_ascii=False)
     return 0
 
 

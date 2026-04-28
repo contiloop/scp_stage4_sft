@@ -1,6 +1,14 @@
 {
   "training": {
     "backend": "unsloth",
+    "runtime": {
+      "mode": "mock",
+      "subprocess": {
+        "collapse_command": null,
+        "unload_command": null,
+        "update_command": null
+      }
+    },
     "collapse_lora": {
       "rank": 4,
       "learning_rate": 0.005,

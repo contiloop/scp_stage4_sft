@@ -83,10 +83,50 @@ def test_prepare_data_overflow_split_creates_chunk_ids(tmp_path: Path) -> None:
                 "data.length.max_source_tokens=3",
                 "data.length.overflow=split",
                 "data.length.split.max_chunks_per_row=2",
+                "data.length.split.fallback_for_long_sentence=split",
                 "data.subset_size=8",
             ],
         )
         rows = read_jsonl(workdir / "artifacts" / "data" / "datapool.normalized.jsonl")
         assert any("__chunk_" in str(row["id"]) for row in rows)
+    finally:
+        os.chdir(old_cwd)
+
+
+def test_prepare_data_local_jsonl_runtime_uses_configured_source(tmp_path: Path) -> None:
+    workdir = tmp_path / "work_local_jsonl"
+    workdir.mkdir(parents=True, exist_ok=True)
+    raw_path = workdir / "raw.jsonl"
+    raw_path.write_text(
+        json.dumps(
+            {
+                "id": "local-row-1",
+                "dataset": "local_jsonl_dataset",
+                "source_text": "A configured local JSONL row.",
+                "title": "Configured",
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    old_cwd = Path.cwd()
+    try:
+        os.chdir(workdir)
+        run_prepare_data(
+            config_path=str(ROOT / "configs" / "scp_stage4.yaml"),
+            overrides=[
+                "data.runtime.mode=local_jsonl",
+                f"data.runtime.local_jsonl_path={raw_path}",
+                "data.subset_size=1",
+                "data.split.eval_ratio=0",
+            ],
+        )
+        rows = read_jsonl(workdir / "artifacts" / "data" / "datapool.normalized.jsonl")
+        assert rows
+        assert rows[0]["id"].startswith("local-row-1")
+        assert rows[0]["dataset"] == "local_jsonl_dataset"
     finally:
         os.chdir(old_cwd)

@@ -26,9 +26,11 @@ _REQUIRED_TOP_LEVEL = (
 _REQUIRED_LOG_FIELDS = ("run_id", "subset_idx", "phase", "config_hash")
 _ENV_NAME_RE = re.compile(r"^[A-Z][A-Z0-9_]*$")
 _OVERFLOW_POLICIES = {"split", "skip", "truncate"}
+_DATA_RUNTIME_MODES = {"fixture", "hf", "local_jsonl"}
 _INFERENCE_RUNTIME_MODES = {"mock", "subprocess"}
 _QE_RUNTIME_MODES = {"mock", "subprocess"}
 _API_RUNTIME_MODES = {"mock", "subprocess"}
+_TRAINING_RUNTIME_MODES = {"mock", "subprocess"}
 
 
 def _err(errors: list[str], message: str) -> None:
@@ -121,6 +123,38 @@ def _validate_subprocess_command(
             )
 
 
+def _validate_training_runtime(training: dict[str, Any], errors: list[str]) -> None:
+    runtime = _as_dict(training.get("runtime", {}), "training.runtime", errors)
+    mode = runtime.get("mode")
+    if not isinstance(mode, str) or mode not in _TRAINING_RUNTIME_MODES:
+        _err(
+            errors,
+            "training.runtime.mode must be one of: "
+            + ", ".join(sorted(_TRAINING_RUNTIME_MODES)),
+        )
+        return
+
+    subprocess_cfg = _as_dict(
+        runtime.get("subprocess", {}), "training.runtime.subprocess", errors
+    )
+    if mode != "subprocess":
+        return
+    for key in ("collapse_command", "unload_command", "update_command"):
+        command = subprocess_cfg.get(key)
+        if not isinstance(command, list) or not command:
+            _err(
+                errors,
+                f"training.runtime.subprocess.{key} must be a non-empty list when mode=subprocess",
+            )
+            continue
+        for idx, part in enumerate(command):
+            if not isinstance(part, str) or not part.strip():
+                _err(
+                    errors,
+                    f"training.runtime.subprocess.{key}[{idx}] must be a non-empty string",
+                )
+
+
 def validate_config(cfg: dict[str, Any]) -> None:
     errors: list[str] = []
 
@@ -151,11 +185,35 @@ def validate_config(cfg: dict[str, Any]) -> None:
             _err(errors, "model.max_seq_length must be <= model.max_length")
 
     length_cfg = _as_dict(data.get("length", {}), "data.length", errors)
+    data_runtime = _as_dict(data.get("runtime", {}), "data.runtime", errors)
+    data_runtime_mode = data_runtime.get("mode")
+    if not isinstance(data_runtime_mode, str) or data_runtime_mode not in _DATA_RUNTIME_MODES:
+        _err(
+            errors,
+            "data.runtime.mode must be one of: " + ", ".join(sorted(_DATA_RUNTIME_MODES)),
+        )
+    if data_runtime_mode == "local_jsonl":
+        local_jsonl_path = data_runtime.get("local_jsonl_path")
+        if not isinstance(local_jsonl_path, str) or not local_jsonl_path.strip():
+            _err(
+                errors,
+                "data.runtime.local_jsonl_path must be a non-empty string when mode=local_jsonl",
+            )
+    if data_runtime_mode == "hf":
+        datasets = data.get("datasets")
+        if not isinstance(datasets, list) or not datasets:
+            _err(errors, "data.datasets must be a non-empty list when data.runtime.mode=hf")
+
     max_total = _require_number(length_cfg, "max_total_tokens", errors)
     max_source = _require_number(length_cfg, "max_source_tokens", errors)
     max_output = _require_number(length_cfg, "max_output_tokens", errors)
     min_avail = _require_number(length_cfg, "min_available_output_tokens", errors)
     safety = _require_number(length_cfg, "safety_margin_tokens", errors, allow_zero=True)
+    prompt_template_tokens = length_cfg.get("prompt_template_tokens", 0)
+    if isinstance(prompt_template_tokens, bool) or not isinstance(prompt_template_tokens, (int, float)):
+        _err(errors, "data.length.prompt_template_tokens must be numeric")
+    elif prompt_template_tokens < 0:
+        _err(errors, "data.length.prompt_template_tokens must be >= 0")
 
     if max_total is not None and max_length is not None and max_total > max_length:
         _err(errors, "data.length.max_total_tokens must be <= model.max_length")
@@ -166,11 +224,20 @@ def validate_config(cfg: dict[str, Any]) -> None:
     ):
         _err(errors, "data.length.max_total_tokens must be <= model.max_seq_length")
 
-    if None not in {max_source, min_avail, safety, max_total}:
-        if (max_source + min_avail + safety) > max_total:
+    prompt_tokens: float | None
+    if isinstance(prompt_template_tokens, (int, float)) and not isinstance(
+        prompt_template_tokens, bool
+    ):
+        prompt_tokens = float(prompt_template_tokens)
+    else:
+        prompt_tokens = None
+
+    if None not in {max_source, min_avail, safety, max_total, prompt_tokens}:
+        if (max_source + min_avail + safety + prompt_tokens) > max_total:
             _err(
                 errors,
                 "data.length.max_source_tokens + min_available_output_tokens + "
+                "prompt_template_tokens + "
                 "safety_margin_tokens must be <= data.length.max_total_tokens",
             )
     overflow = length_cfg.get("overflow")
@@ -179,6 +246,9 @@ def validate_config(cfg: dict[str, Any]) -> None:
             errors,
             "data.length.overflow must be one of: split, skip, truncate",
         )
+    tokenizer_fallback = length_cfg.get("tokenizer_fallback", "whitespace")
+    if tokenizer_fallback not in {"whitespace", "error"}:
+        _err(errors, "data.length.tokenizer_fallback must be 'whitespace' or 'error'")
 
     q1 = _as_dict(inference.get("q1", {}), "inference.q1", errors)
     q2 = _as_dict(inference.get("q2", {}), "inference.q2", errors)
@@ -220,6 +290,7 @@ def validate_config(cfg: dict[str, Any]) -> None:
 
     if training.get("backend") != "unsloth":
         _err(errors, "training.backend must be 'unsloth'")
+    _validate_training_runtime(training, errors)
     base_update = _as_dict(training.get("base_update", {}), "training.base_update", errors)
     if base_update.get("mode") not in {"lora", "full_weight"}:
         _err(errors, "training.base_update.mode must be 'lora' or 'full_weight'")

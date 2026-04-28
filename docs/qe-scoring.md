@@ -282,8 +282,12 @@ The isolated QE runtime scores one translation per row.
   "id": "run_abc123/subsets/subset_000/sample_000001/q1",
   "row_id": "sample_000001",
   "q_tag": "q1",
-  "source": "string",
-  "mt": "string"
+  "backend": "metricx24",
+  "src": "string",
+  "mt": "string",
+  "run_id": "run_abc123",
+  "subset_idx": 0,
+  "phase": "infer-q1"
 }
 ```
 
@@ -300,12 +304,17 @@ After QE subprocess results are returned, the scoring layer joins Q1 and Q2 by `
 
 ```json
 {
+  "id": "sample_000001",
   "row_id": "sample_000001",
   "source": "string",
   "mt_q1": "string",
-  "qe_q1": 0.82,
+  "qe_q1": 24.18,
+  "qe_raw_q1": 0.82,
+  "metricx_q1_clamped": false,
   "mt_q2": "string",
-  "qe_q2": 0.71
+  "qe_q2": 24.07,
+  "qe_raw_q2": 0.93,
+  "metricx_q2_clamped": false
 }
 ```
 
@@ -313,22 +322,31 @@ After QE subprocess results are returned, the scoring layer joins Q1 and Q2 by `
 
 ```json
 {
-  "row_id": "string",
-  "qe_q1": 0.82,
-  "qe_q2": 0.71,
+  "id": "sample_000001",
+  "qe_q1": 24.18,
+  "qe_raw_q1": 0.82,
+  "metricx_q1_clamped": false,
+  "qe_q2": 24.07,
+  "qe_raw_q2": 0.93,
+  "metricx_q2_clamped": false,
   "delta_qe": -0.11,
   "collapse_term": 0.134,
-  "score_s": 1.27,
-  "selected": true
+  "difficulty_term": -3.185523,
+  "difficulty_z": 0.42,
+  "collapse_z": 1.11,
+  "score_s": 0.91
 }
 ```
 
 Rules:
 
 - `qe_q1` and `qe_q2` must be quality-oriented
+- `qe_raw_q1` and `qe_raw_q2` preserve raw backend score direction
+- MetricX rows should record `metricx_q1_clamped` / `metricx_q2_clamped` when clamp-on-convert is enabled
 - `delta_qe = qe_q2 - qe_q1`
 - collapse corresponds to `delta_qe < 0`
 - MetricX raw error scores must not be written as `qe_q1` or `qe_q2`
+- selected rows should additionally include `selection_rank` and `selection_rule`
 
 ---
 

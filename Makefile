@@ -6,11 +6,12 @@ PY := $(if $(wildcard $(VENV_PYTHON)),$(VENV_PYTHON),$(PYTHON))
 PYTHONPATH := src
 CONFIG ?= configs/scp_stage4.yaml
 RUN_ID ?= local_contract
+OVERRIDES ?=
 
 .PHONY: set validate-config validate-jsonl validate-local test-local smoke-local \
 	validate-remote-env smoke-remote-qe smoke-remote-model smoke-remote-api dry-run-remote-subset \
 	prepare-data run-subset run-stage eval eval-ood \
-	infer-q1 train-collapse-lora infer-q2 score call-api update-base
+	infer-q1 train-collapse-lora infer-q2 score unload-collapse-lora call-api update-base
 
 # Target: set
 # required config keys: none
@@ -35,7 +36,7 @@ set:
 # runtime: local CPU only
 # exit behavior: 0 if composed config contract is valid; non-zero on missing config/schema mismatch
 validate-config:
-	@PYTHONPATH=$(PYTHONPATH) $(PY) -m scp_stage4.pipeline.validate_config --config $(CONFIG)
+	@PYTHONPATH=$(PYTHONPATH) $(PY) -m scp_stage4.pipeline.validate_config --config $(CONFIG) $(OVERRIDES)
 
 # Target: validate-jsonl
 # required config keys: logging.local.root_dir, run.run_id
@@ -44,7 +45,7 @@ validate-config:
 # runtime: local CPU only (hooks optional Data/Schema validator when available)
 # exit behavior: 0 if JSONL/schema contract passes; non-zero on malformed JSONL/schema mismatch
 validate-jsonl:
-	@PYTHONPATH=$(PYTHONPATH) $(PY) -m scp_stage4.schema.validate_jsonl --config $(CONFIG) --run-id $(RUN_ID)
+	@PYTHONPATH=$(PYTHONPATH) $(PY) -m scp_stage4.schema.validate_jsonl --config $(CONFIG) --run-id $(RUN_ID) $(OVERRIDES)
 
 # Target: validate-local
 # required config keys: same as validate-config + validate-jsonl requirements
@@ -72,7 +73,7 @@ test-local:
 # runtime: local CPU only with mocked Q1/Q2/QE/API/update flow
 # exit behavior: 0 on successful contract flow; non-zero on row-id drift/missing artifact/schema mismatch
 smoke-local:
-	@PYTHONPATH=$(PYTHONPATH) $(PY) -m scp_stage4.pipeline.smoke_local --config $(CONFIG) --run-id $(RUN_ID)
+	@PYTHONPATH=$(PYTHONPATH) $(PY) -m scp_stage4.pipeline.smoke_local --config $(CONFIG) --run-id $(RUN_ID) $(OVERRIDES)
 
 # Target: prepare-data
 # required config keys: data.*, pipeline.subset.*, run.run_id
@@ -81,7 +82,7 @@ smoke-local:
 # runtime: local CPU only, deterministic local normalization/split/sampling
 # exit behavior: 0 on contract artifact generation; non-zero on config/schema/IO failures
 prepare-data: validate-config
-	@PYTHONPATH=$(PYTHONPATH) $(PY) -m scp_stage4.pipeline.prepare_data --config $(CONFIG)
+	@PYTHONPATH=$(PYTHONPATH) $(PY) -m scp_stage4.pipeline.prepare_data --config $(CONFIG) $(OVERRIDES)
 
 # Target: infer-q1
 # required config keys: inference.q1.*, model.*, run.run_id
@@ -90,17 +91,16 @@ prepare-data: validate-config
 # runtime: local CPU only, mocked generation
 # exit behavior: 0 on deterministic mocked output path readiness; non-zero on contract failure
 infer-q1: prepare-data
-	@PYTHONPATH=$(PYTHONPATH) $(PY) -m scp_stage4.pipeline.step_subset infer-q1 --config $(CONFIG) --run-id $(RUN_ID) --subset-idx 0 --use-prepared-data
+	@PYTHONPATH=$(PYTHONPATH) $(PY) -m scp_stage4.pipeline.step_subset infer-q1 --config $(CONFIG) --run-id $(RUN_ID) --subset-idx 0 --use-prepared-data $(OVERRIDES)
 
 # Target: train-collapse-lora
 # required config keys: training.collapse_lora.*, training.backend
 # input artifacts: subsets/subset_000/q1.jsonl
-# output artifacts: subsets/subset_000/train_final/ (mocked marker)
-# runtime: local CPU only, mocked training
-# exit behavior: 0 on mocked contract pass; non-zero on contract failure
+# output artifacts: subsets/subset_000/collapse_adapter/collapse_state.json
+# runtime: local CPU only in mock mode; real mode delegates to training subprocess
+# exit behavior: 0 on collapse adapter state; non-zero on contract failure
 train-collapse-lora: infer-q1
-	@mkdir -p artifacts/runs/$(RUN_ID)/subsets/subset_000/train_final
-	@echo "mock collapse lora trained for subset_000" > artifacts/runs/$(RUN_ID)/subsets/subset_000/train_final/collapse_lora.marker.txt
+	@PYTHONPATH=$(PYTHONPATH) $(PY) -m scp_stage4.pipeline.step_subset train-collapse-lora --config $(CONFIG) --run-id $(RUN_ID) --subset-idx 0 $(OVERRIDES)
 
 # Target: infer-q2
 # required config keys: inference.q2.*, training.collapse_lora.*
@@ -109,7 +109,7 @@ train-collapse-lora: infer-q1
 # runtime: local CPU only, mocked generation
 # exit behavior: 0 on deterministic mocked output path readiness; non-zero on contract failure
 infer-q2: train-collapse-lora
-	@PYTHONPATH=$(PYTHONPATH) $(PY) -m scp_stage4.pipeline.step_subset infer-q2 --config $(CONFIG) --run-id $(RUN_ID) --subset-idx 0
+	@PYTHONPATH=$(PYTHONPATH) $(PY) -m scp_stage4.pipeline.step_subset infer-q2 --config $(CONFIG) --run-id $(RUN_ID) --subset-idx 0 $(OVERRIDES)
 
 # Target: score
 # required config keys: qe.*, pipeline.subset.*
@@ -118,7 +118,16 @@ infer-q2: train-collapse-lora
 # runtime: local CPU only, mocked QE scoring
 # exit behavior: 0 on deterministic mocked scoring pass; non-zero on contract failure
 score: infer-q2
-	@PYTHONPATH=$(PYTHONPATH) $(PY) -m scp_stage4.pipeline.step_subset score --config $(CONFIG) --run-id $(RUN_ID) --subset-idx 0
+	@PYTHONPATH=$(PYTHONPATH) $(PY) -m scp_stage4.pipeline.step_subset score --config $(CONFIG) --run-id $(RUN_ID) --subset-idx 0 $(OVERRIDES)
+
+# Target: unload-collapse-lora
+# required config keys: training.runtime.*, training.collapse_lora.*
+# input artifacts: subsets/subset_000/q2.jsonl, collapse adapter state
+# output artifacts: subsets/subset_000/clean_base.json
+# runtime: local CPU only in mock mode; real mode delegates to training subprocess
+# exit behavior: 0 after clean-base verification; non-zero on contract failure
+unload-collapse-lora: score
+	@PYTHONPATH=$(PYTHONPATH) $(PY) -m scp_stage4.pipeline.step_subset unload-collapse-lora --config $(CONFIG) --run-id $(RUN_ID) --subset-idx 0 $(OVERRIDES)
 
 # Target: call-api
 # required config keys: external_api.*, logging.*
@@ -126,8 +135,8 @@ score: infer-q2
 # output artifacts: subsets/subset_000/api_requests.jsonl, api.jsonl (mocked)
 # runtime: local CPU only, mocked external API behavior
 # exit behavior: 0 on deterministic mocked API contract pass; non-zero on contract failure
-call-api: score
-	@PYTHONPATH=$(PYTHONPATH) $(PY) -m scp_stage4.pipeline.step_subset call-api --config $(CONFIG) --run-id $(RUN_ID) --subset-idx 0
+call-api: unload-collapse-lora
+	@PYTHONPATH=$(PYTHONPATH) $(PY) -m scp_stage4.pipeline.step_subset call-api --config $(CONFIG) --run-id $(RUN_ID) --subset-idx 0 $(OVERRIDES)
 
 # Target: update-base
 # required config keys: training.base_update.*, training.backend
@@ -136,7 +145,7 @@ call-api: score
 # runtime: local CPU only, mocked training update
 # exit behavior: 0 on deterministic mocked update pass; non-zero on contract failure
 update-base: call-api
-	@PYTHONPATH=$(PYTHONPATH) $(PY) -m scp_stage4.pipeline.step_subset update-base --config $(CONFIG) --run-id $(RUN_ID) --subset-idx 0
+	@PYTHONPATH=$(PYTHONPATH) $(PY) -m scp_stage4.pipeline.step_subset update-base --config $(CONFIG) --run-id $(RUN_ID) --subset-idx 0 $(OVERRIDES)
 
 # Target: run-subset
 # required config keys: full local harness config
@@ -145,16 +154,16 @@ update-base: call-api
 # runtime: local CPU only, mocked end-to-end subset flow
 # exit behavior: 0 on full mocked subset contract pass; non-zero on any step contract failure
 run-subset: prepare-data
-	@PYTHONPATH=$(PYTHONPATH) $(PY) -m scp_stage4.pipeline.step_subset run-subset --config $(CONFIG) --run-id $(RUN_ID) --subset-idx 0 --use-prepared-data
+	@PYTHONPATH=$(PYTHONPATH) $(PY) -m scp_stage4.pipeline.step_subset run-subset --config $(CONFIG) --run-id $(RUN_ID) --subset-idx 0 --use-prepared-data $(OVERRIDES)
 
 # Target: run-stage
 # required config keys: full local harness config
 # input artifacts: configs + local fixtures
-# output artifacts: stage-level mocked outputs (single-subset foundation mode)
-# runtime: local CPU only, mocked stage flow
-# exit behavior: 0 on mocked stage contract pass; non-zero on any contract failure
-run-stage: run-subset
-	@echo "run-stage: foundation mode executes one mocked subset"
+# output artifacts: stage-level subset chain and run_stage_summary.json
+# runtime: local CPU only in mock mode; real backends use configured subprocess hooks
+# exit behavior: 0 when every scheduled subset completes; non-zero on any contract failure
+run-stage: prepare-data
+	@PYTHONPATH=$(PYTHONPATH) $(PY) -m scp_stage4.pipeline.step_subset run-stage --config $(CONFIG) --run-id $(RUN_ID) $(OVERRIDES)
 
 # Target: eval
 # required config keys: pipeline.eval_after_subset.*, logging.*
@@ -181,7 +190,7 @@ eval-ood:
 # runtime: local/remote CPU only; no GPU/API call
 # exit behavior: 0 when config/env contract parsing succeeds; non-zero on invalid config
 validate-remote-env:
-	@PYTHONPATH=$(PYTHONPATH) $(PY) -m scp_stage4.pipeline.remote_checks validate-env --config $(CONFIG)
+	@PYTHONPATH=$(PYTHONPATH) $(PY) -m scp_stage4.pipeline.remote_checks validate-env --config $(CONFIG) $(OVERRIDES)
 
 # Target: smoke-remote-qe
 # required config keys: qe.isolation.env.comet_python_env, qe.isolation.env.metricx_python_env
@@ -190,7 +199,7 @@ validate-remote-env:
 # runtime: remote preflight contract only; no real QE model execution
 # exit behavior: 0 when required env vars/path contracts are present; non-zero otherwise
 smoke-remote-qe:
-	@PYTHONPATH=$(PYTHONPATH) $(PY) -m scp_stage4.pipeline.remote_checks smoke-qe --config $(CONFIG)
+	@PYTHONPATH=$(PYTHONPATH) $(PY) -m scp_stage4.pipeline.remote_checks smoke-qe --config $(CONFIG) $(OVERRIDES)
 
 # Target: smoke-remote-model
 # required config keys: training.backend
@@ -199,7 +208,7 @@ smoke-remote-qe:
 # runtime: remote preflight contract only; no actual GPU model load
 # exit behavior: 0 when model training contract is valid; non-zero otherwise
 smoke-remote-model:
-	@PYTHONPATH=$(PYTHONPATH) $(PY) -m scp_stage4.pipeline.remote_checks smoke-model --config $(CONFIG)
+	@PYTHONPATH=$(PYTHONPATH) $(PY) -m scp_stage4.pipeline.remote_checks smoke-model --config $(CONFIG) $(OVERRIDES)
 
 # Target: smoke-remote-api
 # required config keys: external_api.primary.model, external_api.primary.api_key_env
@@ -208,7 +217,7 @@ smoke-remote-model:
 # runtime: remote preflight contract only; no real API request
 # exit behavior: 0 when API contract is ready; non-zero on placeholder model/missing env
 smoke-remote-api:
-	@PYTHONPATH=$(PYTHONPATH) $(PY) -m scp_stage4.pipeline.remote_checks smoke-api --config $(CONFIG)
+	@PYTHONPATH=$(PYTHONPATH) $(PY) -m scp_stage4.pipeline.remote_checks smoke-api --config $(CONFIG) $(OVERRIDES)
 
 # Target: dry-run-remote-subset
 # required config keys: same as smoke-local + remote contract validity
@@ -217,4 +226,4 @@ smoke-remote-api:
 # runtime: remote deterministic dry-run using mocked flow only (no GPU/QE/API)
 # exit behavior: 0 on successful dry-run artifact generation; non-zero on contract failure
 dry-run-remote-subset:
-	@PYTHONPATH=$(PYTHONPATH) $(PY) -m scp_stage4.pipeline.remote_checks dry-run-subset --config $(CONFIG)
+	@PYTHONPATH=$(PYTHONPATH) $(PY) -m scp_stage4.pipeline.remote_checks dry-run-subset --config $(CONFIG) $(OVERRIDES)

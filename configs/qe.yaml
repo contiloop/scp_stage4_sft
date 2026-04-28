@@ -13,9 +13,20 @@
       "tokenizer_name": "google/mt5-xl",
       "batch_size": 8,
       "max_input_length": 1536,
-      "score_direction": "lower_is_better"
+      "score_direction": "lower_is_better",
+      "transform": {
+        "type": "invert",
+        "max_score": 25.0,
+        "clamp_for_quality": true,
+        "preserve_raw_score": true
+      }
     },
     "scoring": {
+      "weighted_score": {
+        "enabled": true,
+        "alpha": 0.3,
+        "beta": 0.7
+      },
       "selection": {
         "default_rule": {
           "require_score_s_gte": 0.0,

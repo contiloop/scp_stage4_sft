@@ -13,6 +13,8 @@ from scp_stage4.pipeline.step_subset import (
     run_infer_q2,
     run_score,
     run_subset,
+    run_train_collapse_lora,
+    run_unload_collapse_lora,
     run_update_base,
 )
 
@@ -54,9 +56,11 @@ def test_run_subset_writes_stepwise_artifact_chain() -> None:
             _run_root(run_id) / "run_subset_summary.json",
             subset_root / "input.jsonl",
             subset_root / "q1.jsonl",
+            subset_root / "collapse_adapter" / "collapse_state.json",
             subset_root / "q2.jsonl",
             subset_root / "scored.jsonl",
             subset_root / "selected.jsonl",
+            subset_root / "clean_base.json",
             subset_root / "api_requests.jsonl",
             subset_root / "api.jsonl",
             subset_root / "events.jsonl",
@@ -106,12 +110,22 @@ def test_step_entrypoints_run_in_sequence_and_update_base_filters_non_ok() -> No
             subset_size_override=12,
             use_prepared_data=True,
         )
+        run_train_collapse_lora(
+            config_path="configs/scp_stage4.yaml",
+            run_id_override=run_id,
+            subset_idx=0,
+        )
         run_infer_q2(
             config_path="configs/scp_stage4.yaml",
             run_id_override=run_id,
             subset_idx=0,
         )
         run_score(
+            config_path="configs/scp_stage4.yaml",
+            run_id_override=run_id,
+            subset_idx=0,
+        )
+        run_unload_collapse_lora(
             config_path="configs/scp_stage4.yaml",
             run_id_override=run_id,
             subset_idx=0,
@@ -128,7 +142,8 @@ def test_step_entrypoints_run_in_sequence_and_update_base_filters_non_ok() -> No
         assert api_rows, "api rows should exist"
 
         api_rows[0]["status"] = "failed"
-        api_rows[0]["gold"] = "KO_GOLD::FAILED_PLACEHOLDER"
+        api_rows[0]["gold"] = None
+        api_rows[0]["reason"] = "forced test failure row"
         from scp_stage4.data import write_jsonl
 
         write_jsonl(api_path, api_rows)
@@ -162,6 +177,9 @@ def test_run_subset_with_subprocess_runtimes() -> None:
         )
         qe_cmd = json.dumps([sys.executable, "-m", "scp_stage4.pipeline.workers.mock_qe_worker"])
         api_cmd = json.dumps([sys.executable, "-m", "scp_stage4.pipeline.workers.mock_api_worker"])
+        training_cmd = json.dumps(
+            [sys.executable, "-m", "scp_stage4.pipeline.workers.mock_training_worker"]
+        )
 
         summary = run_subset(
             config_path="configs/scp_stage4.yaml",
@@ -176,6 +194,10 @@ def test_run_subset_with_subprocess_runtimes() -> None:
                 f"qe.runtime.subprocess.command={qe_cmd}",
                 "external_api.runtime.mode=subprocess",
                 f"external_api.runtime.subprocess.command={api_cmd}",
+                "training.runtime.mode=subprocess",
+                f"training.runtime.subprocess.collapse_command={training_cmd}",
+                f"training.runtime.subprocess.unload_command={training_cmd}",
+                f"training.runtime.subprocess.update_command={training_cmd}",
             ],
         )
 
@@ -190,7 +212,10 @@ def test_run_subset_with_subprocess_runtimes() -> None:
         assert (runtime_io / "infer-q1.output.jsonl").exists()
         assert (runtime_io / "qe-q1.input.jsonl").exists()
         assert (runtime_io / "qe-q2.output.jsonl").exists()
+        assert (runtime_io / "train-collapse-lora.output.jsonl").exists()
+        assert (runtime_io / "unload-collapse-lora.output.jsonl").exists()
         assert (runtime_io / "call-api.output.jsonl").exists()
+        assert (runtime_io / "update-base.output.jsonl").exists()
         assert summary["counts"]["api"] == len(api_rows)
 
         assert all(str(row["mt_q1"]).startswith("KO_Q1::") for row in q1_rows)

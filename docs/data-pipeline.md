@@ -143,6 +143,12 @@ Rules:
 - `parent_id` and `chunk_idx` are only used when a long row is split.
 - The data module must not create downstream fields such as `mt_q1`, `qe_q1`, `gold`, etc.
 
+Downstream handoff requirement:
+
+- row ids produced here become the stable ids for `q1`, `q2`, `scored`, `selected`, `api_requests`, `api`, and `train_final` artifacts
+- later subset steps may fail if row-id drift is detected
+- `clean_base.json` is not produced by prepare-data, but API/update-base phases must be blocked until clean-base verification passes in subset runtime
+
 ---
 
 ## 5. Text Extraction

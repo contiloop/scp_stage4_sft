@@ -71,6 +71,13 @@ def _resolve_schema_helper() -> Callable[[Iterable[dict[str, Any]], str], list[d
 def _artifact_name_from_path(path: Path) -> str | None:
     if path.name == "train_rows.jsonl":
         return "train"
+    if path.name in {
+        "datapool.normalized.jsonl",
+        "datapool.train.jsonl",
+        "datapool.eval.jsonl",
+        "datapool.train.sampled.jsonl",
+    }:
+        return "normalized"
 
     stem = path.stem
     if "." in stem:
@@ -170,6 +177,15 @@ def _row_id_chain_from_run_root(run_root: Path) -> list[tuple[Path, Path, bool, 
     return chain
 
 
+def _row_id_chain_from_data_artifacts(data_root: Path) -> list[tuple[Path, Path, bool, str, str]]:
+    chain: list[tuple[Path, Path, bool, str, str]] = []
+    train = data_root / "datapool.train.jsonl"
+    sampled = data_root / "datapool.train.sampled.jsonl"
+    if train.exists() and sampled.exists():
+        chain.append((train, sampled, True, "datapool.train", "datapool.train.sampled"))
+    return chain
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Validate local JSONL artifacts")
     parser.add_argument("--config", default="configs/scp_stage4.yaml")
@@ -197,6 +213,7 @@ def main(argv: list[str] | None = None) -> int:
         chains = []
         chains.extend(_row_id_chain_from_fixture_dir(Path("tests/fixtures")))
         chains.extend(_row_id_chain_from_run_root(run_root))
+        chains.extend(_row_id_chain_from_data_artifacts(Path("artifacts/data")))
 
         if validate_row_id_preservation is not None:
             for base, candidate, allow_subset, base_name, candidate_name in chains:

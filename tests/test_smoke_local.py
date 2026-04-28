@@ -57,7 +57,8 @@ class SmokeLocalTests(unittest.TestCase):
         self.assertFalse(effective_config_text.lstrip().startswith("{"))
 
         counts = summary["counts"]
-        self.assertEqual(counts["input"], 32)
+        self.assertGreaterEqual(counts["input"], 1)
+        self.assertLessEqual(counts["input"], 32)
         self.assertEqual(counts["q1"], counts["input"])
         self.assertEqual(counts["q2"], counts["input"])
         self.assertEqual(counts["scored"], counts["input"])

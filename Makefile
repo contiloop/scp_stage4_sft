@@ -77,13 +77,11 @@ smoke-local:
 # Target: prepare-data
 # required config keys: data.*, pipeline.subset.*, run.run_id
 # input artifacts: tests/fixtures/*.jsonl (for local harness)
-# output artifacts: artifacts/data/ placeholder contract files
-# runtime: local CPU only, mocked behavior
-# exit behavior: 0 on deterministic contract artifact readiness; non-zero on config/IO failures
+# output artifacts: artifacts/data/datapool.normalized.jsonl, datapool.train.jsonl, datapool.eval.jsonl, datapool.train.sampled.jsonl
+# runtime: local CPU only, deterministic local normalization/split/sampling
+# exit behavior: 0 on contract artifact generation; non-zero on config/schema/IO failures
 prepare-data: validate-config
-	@mkdir -p artifacts/data
-	@touch artifacts/data/datapool.train.sampled.jsonl
-	@echo "prepare-data: contract-ready"
+	@PYTHONPATH=$(PYTHONPATH) $(PY) -m scp_stage4.pipeline.prepare_data --config $(CONFIG)
 
 # Target: infer-q1
 # required config keys: inference.q1.*, model.*, run.run_id
@@ -145,7 +143,8 @@ update-base:
 # output artifacts: subset artifact chain under artifacts/runs/$(RUN_ID)
 # runtime: local CPU only, mocked end-to-end subset flow
 # exit behavior: 0 on full mocked subset contract pass; non-zero on any step contract failure
-run-subset: smoke-local
+run-subset: prepare-data
+	@PYTHONPATH=$(PYTHONPATH) $(PY) -m scp_stage4.pipeline.smoke_local --config $(CONFIG) --run-id $(RUN_ID) --use-prepared-data
 
 # Target: run-stage
 # required config keys: full local harness config

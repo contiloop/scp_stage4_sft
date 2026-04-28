@@ -28,11 +28,23 @@ def _get_by_dotpath(cfg: dict[str, Any], key: str, default: Any = None) -> Any:
     return cursor
 
 
-def _load_fixture_rows() -> list[dict[str, Any]]:
-    candidates = [
-        Path("tests/fixtures/datapool.train.jsonl"),
-        Path("tests/fixtures/input.jsonl"),
-    ]
+def _load_fixture_rows(use_prepared_data: bool = False) -> list[dict[str, Any]]:
+    if use_prepared_data:
+        candidates = [
+            Path("artifacts/data/datapool.train.sampled.jsonl"),
+            Path("artifacts/data/datapool.train.jsonl"),
+            Path("tests/fixtures/datapool.train.jsonl"),
+            Path("tests/fixtures/input.jsonl"),
+            Path("tests/fixtures/input.happy.jsonl"),
+        ]
+    else:
+        candidates = [
+            Path("tests/fixtures/datapool.train.jsonl"),
+            Path("tests/fixtures/input.jsonl"),
+            Path("tests/fixtures/input.happy.jsonl"),
+            Path("artifacts/data/datapool.train.sampled.jsonl"),
+            Path("artifacts/data/datapool.train.jsonl"),
+        ]
     for path in candidates:
         if path.exists():
             rows: list[dict[str, Any]] = []
@@ -243,6 +255,7 @@ def run_smoke(
     overrides: list[str] | None = None,
     run_id_override: str | None = None,
     subset_size_override: int | None = None,
+    use_prepared_data: bool = False,
 ) -> dict[str, Any]:
     cfg = compose_config(config_path, overrides=overrides)
     validate_config(cfg)
@@ -275,7 +288,7 @@ def run_smoke(
             "qe.primary.score_direction must be 'higher_is_better' or 'lower_is_better'"
         )
 
-    pool_rows = _load_fixture_rows()
+    pool_rows = _load_fixture_rows(use_prepared_data=use_prepared_data)
     input_rows = _select_subset(pool_rows, cfg, subset_size_override)
     q1_rows, q2_rows = _build_q_rows(input_rows, score_direction)
     scored_rows = _score_rows(q2_rows, score_direction)
@@ -395,6 +408,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--config", default="configs/scp_stage4.yaml")
     parser.add_argument("--run-id", default=None)
     parser.add_argument("--subset-size", type=int, default=None)
+    parser.add_argument("--use-prepared-data", action="store_true")
     args, overrides = parser.parse_known_args(argv)
 
     summary = run_smoke(
@@ -402,6 +416,7 @@ def main(argv: list[str] | None = None) -> int:
         overrides=overrides,
         run_id_override=args.run_id,
         subset_size_override=args.subset_size,
+        use_prepared_data=args.use_prepared_data,
     )
     print(json.dumps(summary, ensure_ascii=False, sort_keys=True))
     return 0

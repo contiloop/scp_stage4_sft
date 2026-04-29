@@ -1,0 +1,12 @@
+{
+  "data": {
+    "runtime": {
+      "mode": "hf",
+      "hf": {
+        "streaming": false,
+        "max_rows_per_dataset": null,
+        "fallback_to_snapshot_jsonl": true
+      }
+    }
+  }
+}

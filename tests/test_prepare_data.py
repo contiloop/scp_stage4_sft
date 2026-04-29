@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import types
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -128,5 +129,62 @@ def test_prepare_data_local_jsonl_runtime_uses_configured_source(tmp_path: Path)
         assert rows
         assert rows[0]["id"].startswith("local-row-1")
         assert rows[0]["dataset"] == "local_jsonl_dataset"
+    finally:
+        os.chdir(old_cwd)
+
+
+def test_prepare_data_hf_runtime_falls_back_to_snapshot_jsonl(tmp_path: Path, monkeypatch) -> None:
+    workdir = tmp_path / "work_hf_fallback"
+    workdir.mkdir(parents=True, exist_ok=True)
+    snapshot_dir = workdir / "snapshot"
+    data_dir = snapshot_dir / "data"
+    data_dir.mkdir(parents=True, exist_ok=True)
+    (data_dir / "reuter_processed.jsonl").write_text(
+        json.dumps(
+            {
+                "source_text": "First fallback row.",
+                "title": "A title",
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        + "\n"
+        + json.dumps(
+            {
+                "source_text": "Second fallback row.",
+                "title": "Another title",
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    def _raise_cast_error(*args, **kwargs):
+        raise RuntimeError("Couldn't cast array of type struct to schema")
+
+    fake_datasets = types.SimpleNamespace(load_dataset=_raise_cast_error)
+    fake_hub = types.SimpleNamespace(
+        snapshot_download=lambda **kwargs: str(snapshot_dir),
+    )
+    monkeypatch.setitem(sys.modules, "datasets", fake_datasets)
+    monkeypatch.setitem(sys.modules, "huggingface_hub", fake_hub)
+
+    old_cwd = Path.cwd()
+    try:
+        os.chdir(workdir)
+        run_prepare_data(
+            config_path=str(ROOT / "configs" / "scp_stage4_real.yaml"),
+            overrides=[
+                "data.runtime.mode=hf",
+                "data.split.eval_ratio=0",
+                "data.subset_size=2",
+            ],
+        )
+        rows = read_jsonl(workdir / "artifacts" / "data" / "datapool.normalized.jsonl")
+        assert len(rows) == 2
+        assert rows[0]["dataset"] == "alwaysgood/reuter_processed"
+        assert rows[0]["id"].startswith("alwaysgood/reuter_processed:")
     finally:
         os.chdir(old_cwd)

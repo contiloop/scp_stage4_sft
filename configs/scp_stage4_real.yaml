@@ -2,6 +2,7 @@
   "defaults": [
     "model",
     "data",
+    "data_real_runtime",
     "inference",
     "pipeline",
     "training",

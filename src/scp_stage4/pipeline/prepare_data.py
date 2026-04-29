@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import gzip
 import json
 import math
 import random
@@ -106,6 +107,128 @@ def _load_local_jsonl_rows(data_cfg: Mapping[str, Any]) -> list[dict[str, Any]]:
     return [dict(row) for row in read_jsonl(path)]
 
 
+def _iter_jsonl_mapping_rows(path: Path) -> Iterable[dict[str, Any]]:
+    opener = gzip.open if str(path).endswith(".gz") else open
+    with opener(path, "rt", encoding="utf-8") as handle:
+        for line_idx, line in enumerate(handle, start=1):
+            raw = line.strip()
+            if not raw:
+                continue
+            try:
+                payload = json.loads(raw)
+            except json.JSONDecodeError as exc:
+                raise PrepareDataError(
+                    f"Invalid JSONL record at {path}:{line_idx}: {exc}"
+                ) from exc
+            if isinstance(payload, Mapping):
+                yield dict(payload)
+
+
+def _append_data_file_patterns(patterns: list[str], value: Any) -> None:
+    if isinstance(value, str):
+        candidate = value.strip()
+        if candidate:
+            patterns.append(candidate)
+        return
+
+    if isinstance(value, Mapping):
+        for nested in value.values():
+            _append_data_file_patterns(patterns, nested)
+        return
+
+    if isinstance(value, Iterable) and not isinstance(value, (bytes, bytearray)):
+        for nested in value:
+            _append_data_file_patterns(patterns, nested)
+
+
+def _resolve_data_file_patterns(spec: Mapping[str, Any], split: str) -> list[str]:
+    raw_data_files = spec.get("data_files")
+    patterns: list[str] = []
+    if isinstance(raw_data_files, Mapping) and split in raw_data_files:
+        _append_data_file_patterns(patterns, raw_data_files.get(split))
+    elif raw_data_files is not None:
+        _append_data_file_patterns(patterns, raw_data_files)
+
+    if not patterns:
+        patterns = [
+            "data/*.jsonl",
+            "*.jsonl",
+            "data/*.jsonl.gz",
+            "*.jsonl.gz",
+            "data/*.ndjson",
+            "*.ndjson",
+        ]
+
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for pattern in patterns:
+        if pattern in seen:
+            continue
+        seen.add(pattern)
+        deduped.append(pattern)
+    return deduped
+
+
+def _with_row_contract(raw_row: Mapping[str, Any], dataset_name: str, row_index: int) -> dict[str, Any]:
+    row = dict(raw_row)
+    row.setdefault("dataset", dataset_name)
+    raw_id = row.get("id") or row.get("_id") or row.get("doc_id")
+    row["id"] = str(raw_id) if raw_id is not None else f"{dataset_name}:{row_index:08d}"
+    return row
+
+
+def _load_hf_rows_via_snapshot_jsonl(
+    dataset_name: str,
+    split: str,
+    spec: Mapping[str, Any],
+    max_rows_per_dataset: int | None,
+) -> list[dict[str, Any]]:
+    try:
+        from huggingface_hub import snapshot_download  # type: ignore
+    except ModuleNotFoundError as exc:
+        raise PrepareDataError(
+            "HF JSONL fallback requires the 'huggingface_hub' package"
+        ) from exc
+
+    revision = spec.get("revision")
+    revision_value = str(revision) if isinstance(revision, str) and revision.strip() else None
+    allow_patterns = _resolve_data_file_patterns(spec, split)
+    snapshot_path = Path(
+        snapshot_download(
+            repo_id=dataset_name,
+            repo_type="dataset",
+            revision=revision_value,
+            allow_patterns=allow_patterns,
+        )
+    )
+
+    jsonl_paths = sorted(snapshot_path.rglob("*.jsonl"))
+    jsonl_paths += sorted(snapshot_path.rglob("*.jsonl.gz"))
+    jsonl_paths += sorted(snapshot_path.rglob("*.ndjson"))
+    jsonl_paths += sorted(snapshot_path.rglob("*.ndjson.gz"))
+    if not jsonl_paths:
+        raise PrepareDataError(
+            f"HF JSONL fallback found no JSONL files in snapshot: {snapshot_path}"
+        )
+
+    rows: list[dict[str, Any]] = []
+    row_index = 0
+    for path in jsonl_paths:
+        for raw_row in _iter_jsonl_mapping_rows(path):
+            if max_rows_per_dataset is not None and row_index >= max_rows_per_dataset:
+                break
+            rows.append(_with_row_contract(raw_row, dataset_name, row_index))
+            row_index += 1
+        if max_rows_per_dataset is not None and row_index >= max_rows_per_dataset:
+            break
+
+    if not rows:
+        raise PrepareDataError(
+            f"HF JSONL fallback produced zero rows for dataset '{dataset_name}'"
+        )
+    return rows
+
+
 def _load_hf_rows(data_cfg: Mapping[str, Any]) -> list[dict[str, Any]]:
     try:
         from datasets import load_dataset  # type: ignore
@@ -122,6 +245,7 @@ def _load_hf_rows(data_cfg: Mapping[str, Any]) -> list[dict[str, Any]]:
         hf_cfg = {}
 
     streaming = bool(hf_cfg.get("streaming", False))
+    fallback_to_snapshot_jsonl = bool(hf_cfg.get("fallback_to_snapshot_jsonl", True))
     max_rows_raw = hf_cfg.get("max_rows_per_dataset")
     max_rows_per_dataset = int(max_rows_raw) if max_rows_raw is not None else None
 
@@ -152,21 +276,34 @@ def _load_hf_rows(data_cfg: Mapping[str, Any]) -> list[dict[str, Any]]:
                 load_kwargs[optional_key] = spec[optional_key]
 
         config_name = spec.get("config_name")
-        if isinstance(config_name, str) and config_name.strip():
-            dataset = load_dataset(name, config_name, **load_kwargs)
-        else:
-            dataset = load_dataset(name, **load_kwargs)
+        rows_for_dataset: list[dict[str, Any]] = []
+        try:
+            if isinstance(config_name, str) and config_name.strip():
+                dataset = load_dataset(name, config_name, **load_kwargs)
+            else:
+                dataset = load_dataset(name, **load_kwargs)
 
-        for row_index, raw_row in enumerate(dataset):
-            if max_rows_per_dataset is not None and row_index >= max_rows_per_dataset:
-                break
-            if not isinstance(raw_row, Mapping):
-                continue
-            row = dict(raw_row)
-            row.setdefault("dataset", name)
-            raw_id = row.get("id") or row.get("_id") or row.get("doc_id")
-            row["id"] = str(raw_id) if raw_id is not None else f"{name}:{row_index:08d}"
-            loaded_rows.append(row)
+            row_index = 0
+            for raw_row in dataset:
+                if max_rows_per_dataset is not None and row_index >= max_rows_per_dataset:
+                    break
+                if not isinstance(raw_row, Mapping):
+                    continue
+                rows_for_dataset.append(_with_row_contract(raw_row, name, row_index))
+                row_index += 1
+        except Exception as exc:
+            if not fallback_to_snapshot_jsonl:
+                raise PrepareDataError(
+                    f"HF load_dataset failed for '{name}' and fallback is disabled: {exc}"
+                ) from exc
+            rows_for_dataset = _load_hf_rows_via_snapshot_jsonl(
+                dataset_name=name,
+                split=split,
+                spec=spec,
+                max_rows_per_dataset=max_rows_per_dataset,
+            )
+
+        loaded_rows.extend(rows_for_dataset)
 
     if not loaded_rows:
         raise PrepareDataError("HF loading produced zero rows")

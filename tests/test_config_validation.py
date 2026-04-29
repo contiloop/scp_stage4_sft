@@ -87,6 +87,10 @@ class ConfigValidationTests(unittest.TestCase):
         cfg = compose_config("configs/scp_stage4_real.yaml")
         validate_config(cfg)
 
+    def test_real_profile_defaults_to_hf_data_runtime(self) -> None:
+        cfg = compose_config("configs/scp_stage4_real.yaml")
+        self.assertEqual(cfg["data"]["runtime"]["mode"], "hf")
+
     def test_lora_target_modules_accepts_string_shortcut(self) -> None:
         cfg = compose_config("configs/scp_stage4.yaml")
         cfg["training"]["base_update"]["lora"]["target_modules"] = "all-linear"

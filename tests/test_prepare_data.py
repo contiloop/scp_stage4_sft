@@ -178,6 +178,7 @@ def test_prepare_data_hf_runtime_falls_back_to_snapshot_jsonl(tmp_path: Path, mo
             config_path=str(ROOT / "configs" / "scp_stage4_real.yaml"),
             overrides=[
                 "data.runtime.mode=hf",
+                "data.datasets=[{\"name\":\"alwaysgood/reuter_processed\",\"split\":\"train\"}]",
                 "data.split.eval_ratio=0",
                 "data.subset_size=2",
             ],

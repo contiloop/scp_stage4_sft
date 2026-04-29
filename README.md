@@ -30,7 +30,8 @@ make set-real-env
 
 ```sh
 python -c "from huggingface_hub import login; login()"
-python -m wandb login
+source .venv/bin/activate
+wandb login
 export OPENAI_API_KEY="..."
 ```
 
@@ -141,6 +142,7 @@ make smoke-local OVERRIDES="--set pipeline.subset.size=8"
 ## Notes
 
 - The package is not pip-installed; the Makefile sets `PYTHONPATH=src` for every target. If you invoke `pytest` directly, prefix with `PYTHONPATH=src`.
+- Default Make behavior uses the instance Python (`USE_VENV=0`). To force `.venv`, pass `USE_VENV=1` (example: `make USE_VENV=1 validate-real-config`).
 - Default profile remains mock-first for quick deterministic local checks.
 - Real runtime requires additional dependencies/environment:
   - inference: `transformers`, `peft`, `torch`

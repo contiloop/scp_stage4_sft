@@ -5,6 +5,7 @@ VENV_PYTHON := $(VENV_DIR)/bin/python
 USE_VENV ?= 0
 PY := $(if $(filter 1,$(USE_VENV)),$(if $(wildcard $(VENV_PYTHON)),$(VENV_PYTHON),$(PYTHON)),$(PYTHON))
 REAL_ENV_PY := $(if $(filter 1,$(USE_VENV)),$(VENV_PYTHON),$(PYTHON))
+SETUP_PY := $(if $(filter 1,$(USE_VENV)),$(VENV_PYTHON),$(PYTHON))
 PYTHONPATH := src
 CONFIG ?= configs/scp_stage4.yaml
 RUN_ID ?= local_contract
@@ -24,13 +25,13 @@ OVERRIDES ?=
 # exit behavior: 0 on success; non-zero on directory/bootstrap failure
 set:
 	@mkdir -p artifacts/runs tests/fixtures src/scp_stage4
-	@if [ ! -x "$(VENV_PYTHON)" ]; then \
+	@if [ "$(USE_VENV)" = "1" ] && [ ! -x "$(VENV_PYTHON)" ]; then \
 		$(PYTHON) -m venv $(VENV_DIR); \
 	fi
-	@if ! $(VENV_PYTHON) -c 'import importlib.util, sys; sys.exit(0 if importlib.util.find_spec("pytest") else 1)'; then \
-		$(VENV_PYTHON) -m pip install -q --upgrade pip pytest; \
+	@if ! $(SETUP_PY) -c 'import importlib.util, sys; sys.exit(0 if importlib.util.find_spec("pytest") else 1)'; then \
+		$(SETUP_PY) -m pip install -q --upgrade pip pytest; \
 	fi
-	@$(VENV_PYTHON) -c 'import sys; print("set: python", sys.version.split()[0])'
+	@$(SETUP_PY) -c 'import sys; print("set:", sys.executable, sys.version.split()[0])'
 
 # Target: set-real-env
 # required config keys: none

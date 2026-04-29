@@ -9,10 +9,14 @@
       }
     },
     "datasets": [
-      {"name": "alwaysgood/reuter_processed", "split": "train"}
+      {"name": "alwaysgood/reuter_processed", "split": "train"},
+      {"name": "alwaysgood/c4_noblocklist_processed", "split": "train"},
+      {"name": "alwaysgood/Bloomberg_Financial_News_processed", "split": "train"},
+      {"name": "alwaysgood/earnings_call_mono", "split": "train"},
+      {"name": "alwaysgood/sec-10k-pre-processed", "split": "train"}
     ],
     "text_columns": ["source_text", "text"],
-    "subset_size": 32,
+    "subset_size": null,
     "split": {
       "eval_ratio": 0.02,
       "seed": 42

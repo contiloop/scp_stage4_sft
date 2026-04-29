@@ -54,6 +54,6 @@
       "source_column": "Source_En",
       "target_column": "Target_Ko"
     },
-    "num_workers": 8
+    "num_workers": 10
   }
 }

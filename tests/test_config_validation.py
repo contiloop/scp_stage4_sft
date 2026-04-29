@@ -102,6 +102,14 @@ class ConfigValidationTests(unittest.TestCase):
         with self.assertRaises(ConfigValidationError):
             validate_config(cfg)
 
+    def test_data_num_workers_must_be_positive_integer_or_null(self) -> None:
+        cfg = compose_config("configs/scp_stage4.yaml")
+        cfg["data"]["num_workers"] = 0
+        with self.assertRaises(ConfigValidationError):
+            validate_config(cfg)
+        cfg["data"]["num_workers"] = None
+        validate_config(cfg)
+
 
 if __name__ == "__main__":
     unittest.main()

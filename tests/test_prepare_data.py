@@ -189,3 +189,39 @@ def test_prepare_data_hf_runtime_falls_back_to_snapshot_jsonl(tmp_path: Path, mo
         assert rows[0]["id"].startswith("alwaysgood/reuter_processed:")
     finally:
         os.chdir(old_cwd)
+
+
+def test_prepare_data_hf_runtime_uses_num_workers_as_num_proc(tmp_path: Path, monkeypatch) -> None:
+    workdir = tmp_path / "work_hf_num_proc"
+    workdir.mkdir(parents=True, exist_ok=True)
+    captured: dict[str, object] = {}
+
+    def _fake_load_dataset(*args, **kwargs):
+        captured["num_proc"] = kwargs.get("num_proc")
+        return [
+            {
+                "id": "row-0001",
+                "dataset": "alwaysgood/reuter_processed",
+                "source_text": "A single row for num_proc test.",
+            }
+        ]
+
+    fake_datasets = types.SimpleNamespace(load_dataset=_fake_load_dataset)
+    monkeypatch.setitem(sys.modules, "datasets", fake_datasets)
+
+    old_cwd = Path.cwd()
+    try:
+        os.chdir(workdir)
+        run_prepare_data(
+            config_path=str(ROOT / "configs" / "scp_stage4_real.yaml"),
+            overrides=[
+                "data.runtime.mode=hf",
+                "data.datasets=[{\"name\":\"alwaysgood/reuter_processed\",\"split\":\"train\"}]",
+                "data.split.eval_ratio=0",
+                "data.subset_size=1",
+                "data.num_workers=10",
+            ],
+        )
+        assert captured.get("num_proc") == 10
+    finally:
+        os.chdir(old_cwd)

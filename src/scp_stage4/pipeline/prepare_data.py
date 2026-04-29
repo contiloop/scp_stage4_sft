@@ -248,6 +248,11 @@ def _load_hf_rows(data_cfg: Mapping[str, Any]) -> list[dict[str, Any]]:
     fallback_to_snapshot_jsonl = bool(hf_cfg.get("fallback_to_snapshot_jsonl", True))
     max_rows_raw = hf_cfg.get("max_rows_per_dataset")
     max_rows_per_dataset = int(max_rows_raw) if max_rows_raw is not None else None
+    raw_num_workers = data_cfg.get("num_workers", 1)
+    if isinstance(raw_num_workers, bool) or not isinstance(raw_num_workers, int):
+        num_workers = 1
+    else:
+        num_workers = max(1, raw_num_workers)
 
     dataset_specs = data_cfg.get("datasets")
     if not isinstance(dataset_specs, list) or not dataset_specs:
@@ -266,6 +271,8 @@ def _load_hf_rows(data_cfg: Mapping[str, Any]) -> list[dict[str, Any]]:
             "split": split,
             "streaming": streaming,
         }
+        if not streaming and num_workers > 1:
+            load_kwargs["num_proc"] = num_workers
         for optional_key in (
             "data_dir",
             "data_files",

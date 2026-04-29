@@ -207,6 +207,10 @@ def validate_config(cfg: dict[str, Any]) -> None:
         datasets = data.get("datasets")
         if not isinstance(datasets, list) or not datasets:
             _err(errors, "data.datasets must be a non-empty list when data.runtime.mode=hf")
+    num_workers = data.get("num_workers")
+    if num_workers is not None:
+        if isinstance(num_workers, bool) or not isinstance(num_workers, int) or num_workers <= 0:
+            _err(errors, "data.num_workers must be null or a positive integer")
 
     max_total = _require_number(length_cfg, "max_total_tokens", errors)
     max_source = _require_number(length_cfg, "max_source_tokens", errors)

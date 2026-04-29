@@ -9,7 +9,14 @@ This repository supports two runtime profiles:
 
 ## Quick start
 
-### 1. Install dependencies
+### 1. Clone repository
+
+```sh
+git clone https://github.com/contiloop/scp_stage4_sft.git
+cd scp_stage4_sft
+```
+
+### 2. Install dependencies
 
 ```sh
 make set
@@ -19,11 +26,11 @@ make set-real-env
 `make set` creates `.venv/`, installs `pytest`, and prepares local directories.
 `make set-real-env` installs the real runtime stack (Unsloth / TRL / QE / API deps).
 
-### 2. Configure access (HF / W&B / LLM API)
+### 3. Configure access (HF / W&B / LLM API)
 
 ```sh
 python -c "from huggingface_hub import login; login()"
-wandb login
+python -m wandb login
 export OPENAI_API_KEY="..."
 ```
 
@@ -34,7 +41,7 @@ export COMET_PYTHON="/path/to/comet-env/bin/python"
 export METRICX_PYTHON="/path/to/metricx-env/bin/python"
 ```
 
-### 3. Validate setup
+### 4. Validate setup
 
 ```sh
 make validate-local
@@ -42,13 +49,13 @@ make validate-real-config
 make test-local
 ```
 
-### 4. Preprocess
+### 5. Preprocess
 
 ```sh
 make prepare-data CONFIG=configs/scp_stage4_real.yaml
 ```
 
-### 5. Train
+### 6. Train
 
 Run one subset:
 
@@ -69,7 +76,7 @@ prepare-data → infer-q1 → train-collapse-lora → infer-q2 → score
              → unload-collapse-lora → call-api → update-base
 ```
 
-### 6. Upload artifacts/checkpoints (optional)
+### 7. Upload artifacts/checkpoints (optional)
 
 Checkpoint and run artifacts are written under:
 
@@ -79,7 +86,7 @@ artifacts/runs/<RUN_ID>/
 
 Upload to your model hub / storage policy as needed. (No mandatory upload target is enforced by this repo.)
 
-### 7. Mock profile (optional)
+### 8. Mock profile (optional)
 
 For fast local contract checks without GPU/API:
 

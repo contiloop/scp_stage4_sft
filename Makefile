@@ -46,7 +46,7 @@ set-real-env:
 		"unsloth_zoo[base] @ git+https://github.com/unslothai/unsloth-zoo" \
 		"unsloth[base] @ git+https://github.com/unslothai/unsloth" \
 		tokenizers "trl==0.22.2" "transformers==5.2.0" \
-		openai datasets peft
+		openai datasets peft wandb
 	@$(VENV_PYTHON) -m uv pip install --python "$(VENV_PYTHON)" -q --no-build-isolation \
 		flash-linear-attention "causal_conv1d==1.6.0"
 	@$(VENV_PYTHON) -c 'import torch; print("set-real-env: torch", torch.__version__)'

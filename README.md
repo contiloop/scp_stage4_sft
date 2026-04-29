@@ -30,9 +30,14 @@ make set-real-env
 
 ```sh
 python -c "from huggingface_hub import login; login()"
-source .venv/bin/activate
-wandb login
+python -m wandb login
 export OPENAI_API_KEY="..."
+```
+
+If `wandb` is installed only in `.venv`, use:
+
+```sh
+.venv/bin/python -m wandb login
 ```
 
 If you use QE subprocess isolation, also set:

@@ -14,7 +14,11 @@
       {"name": "alwaysgood/c4_noblocklist_processed", "split": "train"},
       {"name": "alwaysgood/Bloomberg_Financial_News_processed", "split": "train"},
       {"name": "alwaysgood/earnings_call_mono", "split": "train"},
-      {"name": "alwaysgood/sec-10k-pre-processed", "split": "train"}
+      {
+        "name": "alwaysgood/sec-10k-pre-processed",
+        "split": "train",
+        "data_files": {"train": "translation_dataset.parquet"}
+      }
     ],
     "text_columns": ["source_text", "text"],
     "subset_size": null,

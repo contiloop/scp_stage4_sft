@@ -5,7 +5,8 @@
       "local_jsonl_path": null,
       "hf": {
         "streaming": false,
-        "max_rows_per_dataset": null
+        "max_rows_per_dataset": null,
+        "dataset_download_workers": 2
       }
     },
     "datasets": [
@@ -54,6 +55,6 @@
       "source_column": "Source_En",
       "target_column": "Target_Ko"
     },
-    "num_workers": 10
+    "num_workers": 4
   }
 }

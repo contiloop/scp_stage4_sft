@@ -9,6 +9,7 @@ import json
 import math
 import random
 import re
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping
 
@@ -248,6 +249,13 @@ def _load_hf_rows(data_cfg: Mapping[str, Any]) -> list[dict[str, Any]]:
     fallback_to_snapshot_jsonl = bool(hf_cfg.get("fallback_to_snapshot_jsonl", True))
     max_rows_raw = hf_cfg.get("max_rows_per_dataset")
     max_rows_per_dataset = int(max_rows_raw) if max_rows_raw is not None else None
+    raw_dataset_download_workers = hf_cfg.get("dataset_download_workers", 1)
+    if isinstance(raw_dataset_download_workers, bool) or not isinstance(
+        raw_dataset_download_workers, int
+    ):
+        dataset_download_workers = 1
+    else:
+        dataset_download_workers = max(1, raw_dataset_download_workers)
     raw_num_workers = data_cfg.get("num_workers", 1)
     if isinstance(raw_num_workers, bool) or not isinstance(raw_num_workers, int):
         num_workers = 1
@@ -258,8 +266,7 @@ def _load_hf_rows(data_cfg: Mapping[str, Any]) -> list[dict[str, Any]]:
     if not isinstance(dataset_specs, list) or not dataset_specs:
         raise PrepareDataError("data.datasets must be a non-empty list for HF loading")
 
-    loaded_rows: list[dict[str, Any]] = []
-    for dataset_index, spec in enumerate(dataset_specs):
+    def _load_one_dataset(dataset_index: int, spec: Mapping[str, Any]) -> list[dict[str, Any]]:
         if not isinstance(spec, Mapping):
             raise PrepareDataError(f"data.datasets[{dataset_index}] must be a mapping")
         name = str(spec.get("name", "")).strip()
@@ -309,8 +316,24 @@ def _load_hf_rows(data_cfg: Mapping[str, Any]) -> list[dict[str, Any]]:
                 spec=spec,
                 max_rows_per_dataset=max_rows_per_dataset,
             )
+        return rows_for_dataset
 
-        loaded_rows.extend(rows_for_dataset)
+    loaded_rows: list[dict[str, Any]] = []
+    if dataset_download_workers <= 1 or len(dataset_specs) <= 1:
+        for dataset_index, spec in enumerate(dataset_specs):
+            loaded_rows.extend(_load_one_dataset(dataset_index, spec))
+    else:
+        max_parallel = min(dataset_download_workers, len(dataset_specs))
+        indexed_rows: dict[int, list[dict[str, Any]]] = {}
+        with ThreadPoolExecutor(max_workers=max_parallel) as executor:
+            future_to_index = {
+                executor.submit(_load_one_dataset, dataset_index, spec): dataset_index
+                for dataset_index, spec in enumerate(dataset_specs)
+            }
+            for future, dataset_index in future_to_index.items():
+                indexed_rows[dataset_index] = future.result()
+        for dataset_index in range(len(dataset_specs)):
+            loaded_rows.extend(indexed_rows.get(dataset_index, []))
 
     if not loaded_rows:
         raise PrepareDataError("HF loading produced zero rows")

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import time
 import types
 from pathlib import Path
 
@@ -223,5 +224,45 @@ def test_prepare_data_hf_runtime_uses_num_workers_as_num_proc(tmp_path: Path, mo
             ],
         )
         assert captured.get("num_proc") == 10
+    finally:
+        os.chdir(old_cwd)
+
+
+def test_prepare_data_hf_runtime_parallel_dataset_download_preserves_dataset_order(
+    tmp_path: Path, monkeypatch
+) -> None:
+    workdir = tmp_path / "work_hf_parallel_datasets"
+    workdir.mkdir(parents=True, exist_ok=True)
+
+    def _fake_load_dataset(name, *args, **kwargs):
+        if "dataset_a" in name:
+            time.sleep(0.05)
+        return [
+            {
+                "source_text": f"row for {name}",
+            }
+        ]
+
+    fake_datasets = types.SimpleNamespace(load_dataset=_fake_load_dataset)
+    monkeypatch.setitem(sys.modules, "datasets", fake_datasets)
+
+    old_cwd = Path.cwd()
+    try:
+        os.chdir(workdir)
+        run_prepare_data(
+            config_path=str(ROOT / "configs" / "scp_stage4_real.yaml"),
+            overrides=[
+                "data.runtime.mode=hf",
+                "data.datasets=[{\"name\":\"local/dataset_a\",\"split\":\"train\"},{\"name\":\"local/dataset_b\",\"split\":\"train\"}]",
+                "data.runtime.hf.dataset_download_workers=2",
+                "data.num_workers=1",
+                "data.split.eval_ratio=0",
+                "data.subset_size=2",
+            ],
+        )
+        rows = read_jsonl(workdir / "artifacts" / "data" / "datapool.normalized.jsonl")
+        assert len(rows) == 2
+        assert rows[0]["dataset"] == "local/dataset_a"
+        assert rows[1]["dataset"] == "local/dataset_b"
     finally:
         os.chdir(old_cwd)

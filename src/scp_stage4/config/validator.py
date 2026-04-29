@@ -203,6 +203,15 @@ def validate_config(cfg: dict[str, Any]) -> None:
                 errors,
                 "data.runtime.local_jsonl_path must be a non-empty string when mode=local_jsonl",
             )
+    hf_runtime = _as_dict(data_runtime.get("hf", {}), "data.runtime.hf", errors)
+    dataset_download_workers = hf_runtime.get("dataset_download_workers")
+    if dataset_download_workers is not None:
+        if (
+            isinstance(dataset_download_workers, bool)
+            or not isinstance(dataset_download_workers, int)
+            or dataset_download_workers <= 0
+        ):
+            _err(errors, "data.runtime.hf.dataset_download_workers must be null or a positive integer")
     if data_runtime_mode == "hf":
         datasets = data.get("datasets")
         if not isinstance(datasets, list) or not datasets:

@@ -561,13 +561,18 @@ Default:
 
 ```yaml
 data:
-  num_workers: 8
+  runtime:
+    hf:
+      dataset_download_workers: 2
+  num_workers: 4
 ```
 
 Rules:
 
 - `num_workers` must come from config.
-- Default is `8`.
+- Default is `4`.
+- `runtime.hf.dataset_download_workers` controls parallelism across datasets.
+- `num_workers` controls Hugging Face `load_dataset(..., num_proc=...)` when `streaming=false`.
 - Use multiprocessing for extraction, normalization, length checking, and optional splitting.
 - Output must remain deterministic.
 - Random operations must use configured seed.
@@ -822,7 +827,7 @@ data:
 
   subset_size: 32
   seed: 42
-  num_workers: 8
+  num_workers: 4
 
   sampling:
     strategy: random

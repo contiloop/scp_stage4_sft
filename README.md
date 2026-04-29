@@ -25,6 +25,7 @@ make set-real-env
 
 `make set` creates `.venv/`, installs `pytest`, and prepares local directories.
 `make set-real-env` installs the real runtime stack (Unsloth / TRL / QE / API deps).
+By default, it installs into the instance Python (`USE_VENV=0`). To install into `.venv`, use `make USE_VENV=1 set-real-env`.
 
 ### 3. Configure access (HF / W&B / LLM API)
 

@@ -4,6 +4,7 @@ VENV_DIR ?= .venv
 VENV_PYTHON := $(VENV_DIR)/bin/python
 USE_VENV ?= 0
 PY := $(if $(filter 1,$(USE_VENV)),$(if $(wildcard $(VENV_PYTHON)),$(VENV_PYTHON),$(PYTHON)),$(PYTHON))
+REAL_ENV_PY := $(if $(filter 1,$(USE_VENV)),$(VENV_PYTHON),$(PYTHON))
 PYTHONPATH := src
 CONFIG ?= configs/scp_stage4.yaml
 RUN_ID ?= local_contract
@@ -34,23 +35,23 @@ set:
 # Target: set-real-env
 # required config keys: none
 # input artifacts: none
-# output artifacts: python environment with runtime deps for real subprocess workers
+# output artifacts: selected python environment with runtime deps for real subprocess workers
 # runtime: local/remote machine setup step; downloads packages and may require CUDA-compatible wheels
 # exit behavior: 0 on successful dependency install; non-zero on package resolver/install failure
 set-real-env:
-	@if [ ! -x "$(VENV_PYTHON)" ]; then \
+	@if [ "$(USE_VENV)" = "1" ] && [ ! -x "$(VENV_PYTHON)" ]; then \
 		$(PYTHON) -m venv $(VENV_DIR); \
 	fi
-	@$(VENV_PYTHON) -m pip install -q --upgrade pip uv
-	@$(VENV_PYTHON) -m uv pip install --python "$(VENV_PYTHON)" -q --upgrade \
+	@$(REAL_ENV_PY) -m pip install -q --upgrade pip uv
+	@$(REAL_ENV_PY) -m uv pip install --python "$(REAL_ENV_PY)" -q --upgrade \
 		"torch==2.8.0" "triton>=3.3.0" torchvision bitsandbytes "xformers==0.0.32.post2" \
 		"unsloth_zoo[base] @ git+https://github.com/unslothai/unsloth-zoo" \
 		"unsloth[base] @ git+https://github.com/unslothai/unsloth" \
 		tokenizers "trl==0.22.2" "transformers==5.2.0" \
 		openai datasets peft wandb
-	@$(VENV_PYTHON) -m uv pip install --python "$(VENV_PYTHON)" -q --no-build-isolation \
+	@$(REAL_ENV_PY) -m uv pip install --python "$(REAL_ENV_PY)" -q --no-build-isolation \
 		flash-linear-attention "causal_conv1d==1.6.0"
-	@$(VENV_PYTHON) -c 'import torch; print("set-real-env: torch", torch.__version__)'
+	@$(REAL_ENV_PY) -c 'import sys, torch; print("set-real-env:", sys.executable, "torch", torch.__version__)'
 
 # Target: validate-config
 # required config keys: model.*, data.length.*, inference.q1/q2, pipeline.subset, training.backend, external_api.*, logging.local.*

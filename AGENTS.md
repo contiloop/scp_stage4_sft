@@ -92,6 +92,7 @@ Agents MUST use Makefile targets.
 
 ```bash
 make set
+make set-real-env
 make validate-config
 make validate-local
 make test-local
@@ -99,6 +100,9 @@ make smoke-local
 make prepare-data
 make run-subset
 make run-stage
+make validate-real-config
+make run-subset-real
+make run-stage-real
 make eval
 make eval-ood
 ```
@@ -212,6 +216,13 @@ Each subset must be reproducible from:
 - seed
 - dataset artifact
 - base checkpoint
+
+Subset artifact lifecycle rule:
+
+- during execution, stepwise subset artifacts (`input/q1/q2/scored/selected/api/train`) must remain explicit
+- after subset or stage completion, subset directories may be archived as one bundle per subset when configured
+- archive/delete behavior must be YAML-configured; no ad-hoc file deletion in code paths
+- if original subset dirs are deleted after archive, an archive pointer artifact (for example `ARCHIVED.json`) must remain
 
 ---
 

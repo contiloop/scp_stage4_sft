@@ -77,6 +77,27 @@ class ConfigValidationTests(unittest.TestCase):
         cfg["external_api"]["runtime"]["subprocess"]["command"] = ["python", "-m", "x.y"]
         validate_config(cfg)
 
+    def test_subset_archive_format_must_be_supported(self) -> None:
+        cfg = compose_config("configs/scp_stage4.yaml")
+        cfg["pipeline"]["stage"]["subset_archive"]["format"] = "zip"
+        with self.assertRaises(ConfigValidationError):
+            validate_config(cfg)
+
+    def test_real_profile_config_is_valid(self) -> None:
+        cfg = compose_config("configs/scp_stage4_real.yaml")
+        validate_config(cfg)
+
+    def test_lora_target_modules_accepts_string_shortcut(self) -> None:
+        cfg = compose_config("configs/scp_stage4.yaml")
+        cfg["training"]["base_update"]["lora"]["target_modules"] = "all-linear"
+        validate_config(cfg)
+
+    def test_lora_target_modules_rejects_invalid_type(self) -> None:
+        cfg = compose_config("configs/scp_stage4.yaml")
+        cfg["training"]["base_update"]["lora"]["target_modules"] = 123
+        with self.assertRaises(ConfigValidationError):
+            validate_config(cfg)
+
 
 if __name__ == "__main__":
     unittest.main()

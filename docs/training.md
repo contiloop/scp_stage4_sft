@@ -109,6 +109,11 @@ q_proj
 k_proj
 v_proj
 o_proj
+in_proj_qkv
+in_proj_z
+in_proj_a
+in_proj_b
+out_proj
 ```
 
 ### MLP
@@ -201,19 +206,26 @@ base_update:
   persistence: cumulative
   num_train_epochs: 1
 
-  lora:
-    rank: 32
-    alpha: 64
-    dropout: 0.0
-    bias: none
-    target_modules:
-      - q_proj
-      - k_proj
-      - v_proj
-      - o_proj
-      - gate_proj
-      - up_proj
-      - down_proj
+      lora:
+        rank: 32
+        alpha: 64
+        dropout: 0.0
+        bias: none
+        use_rslora: false
+        loftq_config: null
+        target_modules:
+          - q_proj
+          - k_proj
+          - v_proj
+          - o_proj
+          - gate_proj
+          - up_proj
+          - down_proj
+          - in_proj_a
+          - in_proj_b
+          - in_proj_z
+          - in_proj_qkv
+          - out_proj
 
   optimizer:
     learning_rate: 1.0e-5
@@ -615,6 +627,7 @@ Both collapse LoRA and base update MUST use Unsloth.
 - implemented using Unsloth LoRA API
 - temporary adapter
 - same constraints as defined above
+- real subprocess entrypoint: `src/scp_stage4/pipeline/workers/training_worker.py`
 
 ---
 
@@ -624,6 +637,7 @@ Supported modes:
 
 - LoRA (default)
 - full-weight training (optional)
+- real runtime profile: `configs/scp_stage4_real.yaml`
 
 ---
 

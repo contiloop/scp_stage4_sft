@@ -697,6 +697,33 @@ Meanings:
 | `datapool.train.sampled.jsonl` | optional dry-run subset |
 | `ood_test.jsonl` | external OOD evaluation set |
 
+Subset runtime artifacts are produced under run roots:
+
+```txt
+artifacts/
+  runs/
+    {run_id}/
+      subsets/
+        subset_000/
+          input.jsonl
+          q1.jsonl
+          q2.jsonl
+          scored.jsonl
+          selected.jsonl
+          api_requests.jsonl
+          api.jsonl
+          clean_base.json
+          collapse_adapter/
+          train_final/
+```
+
+Post-completion archive policy:
+
+- keep stepwise artifacts explicit while a subset/stage is still running
+- after completion, optional subset-level archive can bundle one subset directory into one archive file
+- optional deletion of original subset directories is allowed only after the stage is complete
+- if original subset directory is removed, keep a pointer file such as `ARCHIVED.json` in its place
+
 ---
 
 ## 16. Config Contract

@@ -8,8 +8,9 @@ CONFIG ?= configs/scp_stage4.yaml
 RUN_ID ?= local_contract
 OVERRIDES ?=
 
-.PHONY: set validate-config validate-jsonl validate-local test-local smoke-local \
+.PHONY: set set-real-env validate-config validate-jsonl validate-local test-local smoke-local \
 	validate-remote-env smoke-remote-qe smoke-remote-model smoke-remote-api dry-run-remote-subset \
+	validate-real-config run-subset-real run-stage-real \
 	prepare-data run-subset run-stage eval eval-ood \
 	infer-q1 train-collapse-lora infer-q2 score unload-collapse-lora call-api update-base
 
@@ -28,6 +29,27 @@ set:
 		$(VENV_PYTHON) -m pip install -q --upgrade pip pytest; \
 	fi
 	@$(VENV_PYTHON) -c 'import sys; print("set: python", sys.version.split()[0])'
+
+# Target: set-real-env
+# required config keys: none
+# input artifacts: none
+# output artifacts: python environment with runtime deps for real subprocess workers
+# runtime: local/remote machine setup step; downloads packages and may require CUDA-compatible wheels
+# exit behavior: 0 on successful dependency install; non-zero on package resolver/install failure
+set-real-env:
+	@if [ ! -x "$(VENV_PYTHON)" ]; then \
+		$(PYTHON) -m venv $(VENV_DIR); \
+	fi
+	@$(VENV_PYTHON) -m pip install -q --upgrade pip uv
+	@$(VENV_PYTHON) -m uv pip install --python "$(VENV_PYTHON)" -q --upgrade \
+		"torch==2.8.0" "triton>=3.3.0" torchvision bitsandbytes "xformers==0.0.32.post2" \
+		"unsloth_zoo[base] @ git+https://github.com/unslothai/unsloth-zoo" \
+		"unsloth[base] @ git+https://github.com/unslothai/unsloth" \
+		tokenizers "trl==0.22.2" "transformers==5.2.0" \
+		openai datasets peft
+	@$(VENV_PYTHON) -m uv pip install --python "$(VENV_PYTHON)" -q --no-build-isolation \
+		flash-linear-attention "causal_conv1d==1.6.0"
+	@$(VENV_PYTHON) -c 'import torch; print("set-real-env: torch", torch.__version__)'
 
 # Target: validate-config
 # required config keys: model.*, data.length.*, inference.q1/q2, pipeline.subset, training.backend, external_api.*, logging.local.*
@@ -227,3 +249,30 @@ smoke-remote-api:
 # exit behavior: 0 on successful dry-run artifact generation; non-zero on contract failure
 dry-run-remote-subset:
 	@PYTHONPATH=$(PYTHONPATH) $(PY) -m scp_stage4.pipeline.remote_checks dry-run-subset --config $(CONFIG) $(OVERRIDES)
+
+# Target: validate-real-config
+# required config keys: full subprocess runtime commands across inference/qe/external_api/training
+# input artifacts: configs/scp_stage4_real.yaml
+# output artifacts: none
+# runtime: local CPU only (contract validation)
+# exit behavior: 0 when real profile config is structurally valid; non-zero otherwise
+validate-real-config:
+	@PYTHONPATH=$(PYTHONPATH) $(PY) -m scp_stage4.pipeline.validate_config --config configs/scp_stage4_real.yaml $(OVERRIDES)
+
+# Target: run-subset-real
+# required config keys: same as run-subset + subprocess worker commands
+# input artifacts: prepared datapool + runtime deps in active python env
+# output artifacts: full subset artifact chain under artifacts/runs/$(RUN_ID)
+# runtime: subprocess backends for inference/QE/API/training
+# exit behavior: 0 on successful subset completion; non-zero with structured failure logs
+run-subset-real: prepare-data
+	@PYTHONPATH=$(PYTHONPATH) $(PY) -m scp_stage4.pipeline.step_subset run-subset --config configs/scp_stage4_real.yaml --run-id $(RUN_ID) --subset-idx 0 --use-prepared-data $(OVERRIDES)
+
+# Target: run-stage-real
+# required config keys: same as run-stage + subprocess worker commands
+# input artifacts: prepared datapool + runtime deps in active python env
+# output artifacts: run_stage_summary.json + per-subset artifacts
+# runtime: subprocess backends for inference/QE/API/training
+# exit behavior: 0 when all subsets complete; non-zero on first contract/runtime failure
+run-stage-real: prepare-data
+	@PYTHONPATH=$(PYTHONPATH) $(PY) -m scp_stage4.pipeline.step_subset run-stage --config configs/scp_stage4_real.yaml --run-id $(RUN_ID) $(OVERRIDES)

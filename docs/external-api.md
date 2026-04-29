@@ -25,6 +25,7 @@ The external API layer must not:
 - run QE scoring
 - mutate base model state
 - call APIs for unselected monolingual rows
+- bypass the subprocess worker contract
 
 ---
 
@@ -115,6 +116,12 @@ artifacts/
       subsets/
         subset_000/
           api_requests.jsonl
+
+Real subprocess worker entrypoint:
+
+```txt
+src/scp_stage4/pipeline/workers/external_api_worker.py
+```
 ```
 
 Each line:

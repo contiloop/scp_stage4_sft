@@ -133,9 +133,11 @@ def cmd_dry_run_subset(config_path: str, overrides: list[str]) -> int:
         subset_size_override=32,
         use_prepared_data=True,
     )
+    cfg = compose_config(config_path, merged_overrides)
+    inference_mode = str(cfg.get("inference", {}).get("runtime", {}).get("mode", "mock"))
     print(
-        "dry-run-remote-subset: generated local mock artifacts "
-        f"at {summary['run_root']}"
+        "dry-run-remote-subset: generated subset artifacts "
+        f"at {summary['run_root']} (inference.runtime.mode={inference_mode})"
     )
     return 0
 

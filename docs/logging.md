@@ -93,6 +93,11 @@ artifacts/
           metrics.jsonl
           failures.jsonl
           train_final/
+
+      archives/
+        subsets/
+          subset_000.tar.gz
+          subset_000.manifest.json
 ```
 
 Run-level logs are for cross-subset analysis.
@@ -105,6 +110,9 @@ Rules:
 - JSONL is preferred for append-only logs
 - every artifact path should be relative to the run root when possible
 - failed/skipped/filtered rows must be logged, not silently dropped
+- when subset archive is enabled, archive creation must be logged with `phase: archive-subset`
+- subset archive manifest should include run/subset ids, config hash, archive path, and file inventory
+- if subset directories are pruned after archive, keep an `ARCHIVED.json` pointer artifact in each pruned subset directory
 
 ---
 

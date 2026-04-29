@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import shutil
 import sys
+import tarfile
 from pathlib import Path
 
 import pytest
@@ -15,6 +16,7 @@ from scp_stage4.pipeline.step_subset import (
     run_infer_q1,
     run_infer_q2,
     run_score,
+    run_stage,
     run_subset,
     run_train_collapse_lora,
     run_unload_collapse_lora,
@@ -303,3 +305,63 @@ def test_run_subset_use_prepared_data_requires_prepare_data(tmp_path: Path, monk
             subset_size_override=8,
             use_prepared_data=True,
         )
+
+
+def test_run_subset_writes_subset_archive_when_enabled() -> None:
+    run_id = "test_step_subset_archive_enabled"
+    _cleanup(run_id)
+    try:
+        run_prepare_data(config_path="configs/scp_stage4.yaml")
+        summary = run_subset(
+            config_path="configs/scp_stage4.yaml",
+            run_id_override=run_id,
+            subset_idx=0,
+            subset_size_override=8,
+            use_prepared_data=True,
+            overrides=["pipeline.stage.subset_archive.enabled=true"],
+        )
+        archive = summary.get("subset_archive")
+        assert isinstance(archive, dict)
+        archive_path = Path(str(archive["archive_path"]))
+        manifest_path = Path(str(archive["manifest_path"]))
+        assert archive_path.exists()
+        assert manifest_path.exists()
+
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        assert manifest["run_id"] == run_id
+        assert manifest["subset_idx"] == 0
+        assert manifest["file_count"] >= 1
+        with tarfile.open(archive_path, "r:gz") as handle:
+            names = handle.getnames()
+            assert any(name.endswith("subset_000/q1.jsonl") for name in names)
+            assert any(name.endswith("subset_000/train_final/train_rows.jsonl") for name in names)
+    finally:
+        _cleanup(run_id)
+
+
+def test_run_stage_can_prune_subset_dirs_after_archiving() -> None:
+    run_id = "test_stage_archive_prune"
+    _cleanup(run_id)
+    try:
+        run_prepare_data(config_path="configs/scp_stage4.yaml")
+        summary = run_stage(
+            config_path="configs/scp_stage4.yaml",
+            run_id_override=run_id,
+            subset_size_override=8,
+            overrides=[
+                "pipeline.stage.max_subsets=1",
+                "pipeline.stage.subset_archive.enabled=true",
+                "pipeline.stage.subset_archive.delete_original_after_archive=true",
+            ],
+        )
+        assert summary["archived_subset_dirs_pruned"] == 1
+        subset_root = _subset_root(run_id)
+        assert (subset_root / "ARCHIVED.json").exists()
+        assert not (subset_root / "q1.jsonl").exists()
+
+        archive_path = _run_root(run_id) / "archives" / "subsets" / "subset_000.tar.gz"
+        manifest_path = _run_root(run_id) / "archives" / "subsets" / "subset_000.manifest.json"
+        assert archive_path.exists()
+        assert manifest_path.exists()
+    finally:
+        _cleanup(run_id)

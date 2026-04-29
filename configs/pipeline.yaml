@@ -11,7 +11,13 @@
     },
     "stage": {
       "max_subsets": null,
-      "use_sampled_data": false
+      "use_sampled_data": false,
+      "subset_archive": {
+        "enabled": false,
+        "format": "tar.gz",
+        "output_dir": "archives/subsets",
+        "delete_original_after_archive": false
+      }
     },
     "execution": {
       "allow_microbatch_overlap": true,

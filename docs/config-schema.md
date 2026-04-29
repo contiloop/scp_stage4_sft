@@ -323,6 +323,15 @@ pipeline:
     seed: 42
     drop_last: false
 
+  stage:
+    max_subsets: null
+    use_sampled_data: false
+    subset_archive:
+      enabled: false
+      format: tar.gz
+      output_dir: archives/subsets
+      delete_original_after_archive: false
+
   execution:
     allow_microbatch_overlap: true
     allow_next_subset_q1_prefetch: false
@@ -364,6 +373,10 @@ Rules:
 - `Target_Ko` is the reference column for OOD reference-based metrics
 - `runtime: qe_subprocess` means MetricX, BLEU, and chrF are computed outside the main training process
 - BLEU and chrF settings must match the reference notebook unless explicitly changed in config
+- `stage.subset_archive.enabled` controls whether completed subset directories are archived as one file per subset
+- `stage.subset_archive.format` must be one of `tar`, `tar.gz`, `tar.xz`
+- `stage.subset_archive.output_dir` is relative to `artifacts/runs/{run_id}`
+- `stage.subset_archive.delete_original_after_archive` may prune subset directories after stage completion; archive and manifest must exist first
 
 ---
 
@@ -395,6 +408,8 @@ training:
       alpha: 64
       dropout: 0.0
       bias: none
+      use_rslora: false
+      loftq_config: null
       target_modules:
         - q_proj
         - k_proj
@@ -403,6 +418,11 @@ training:
         - gate_proj
         - up_proj
         - down_proj
+        - in_proj_a
+        - in_proj_b
+        - in_proj_z
+        - in_proj_qkv
+        - out_proj
 
     optimizer:
       learning_rate: 1.0e-5
@@ -452,6 +472,9 @@ Rules:
 - collapse LoRA must not be merged into the base model
 - base update is cumulative across subsets
 - `base_update.mode: full_weight` must use the same optimizer/batching schema unless overridden
+- `training.base_update.lora.target_modules` may be either:
+  - a string shortcut such as `all-linear`
+  - a list of module names (for example attention/MLP + DeltaNet projections)
 - collapse LoRA is not saved by default
 - base update checkpoint is saved after every subset
 - checkpoint retention must prevent unbounded disk growth
@@ -559,6 +582,11 @@ Subprocess worker CLI contract:
   - `--run-id`, `--subset-idx`, `--section`, `--phase`
 - workers should validate required request fields and required response fields per phase before writing output JSONL
 - missing required response keys must fail the worker with non-zero exit code
+- checked-in real profile: `configs/scp_stage4_real.yaml`
+  - inference worker: `python3 -m scp_stage4.pipeline.workers.inference_worker`
+  - QE worker: `python3 -m scp_stage4.pipeline.workers.qe_worker`
+  - external API worker: `python3 -m scp_stage4.pipeline.workers.external_api_worker`
+  - training worker: `python3 -m scp_stage4.pipeline.workers.training_worker`
 
 ---
 

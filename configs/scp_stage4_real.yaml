@@ -1,0 +1,20 @@
+{
+  "defaults": [
+    "model",
+    "data",
+    "inference",
+    "pipeline",
+    "training",
+    "qe",
+    "external_api",
+    "logging",
+    "prompts",
+    "run",
+    "inference_real_runtime",
+    "qe_real_runtime",
+    "external_api_real_runtime",
+    "training_real_runtime",
+    "run_real"
+  ],
+  "version": 1
+}

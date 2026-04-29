@@ -29,6 +29,7 @@ _OVERFLOW_POLICIES = {"split", "skip", "truncate"}
 _SPLIT_UNIT_POLICIES = {"sentence"}
 _SPLIT_LONG_SENTENCE_POLICIES = {"skip", "truncate", "split"}
 _SPLIT_MAX_CHUNKS_EXCEEDED_POLICIES = {"skip", "error"}
+_SUBSET_ARCHIVE_FORMATS = {"tar", "tar.gz", "tar.xz"}
 _DATA_RUNTIME_MODES = {"fixture", "hf", "local_jsonl"}
 _INFERENCE_RUNTIME_MODES = {"mock", "subprocess"}
 _QE_RUNTIME_MODES = {"mock", "subprocess"}
@@ -348,6 +349,43 @@ def validate_config(cfg: dict[str, Any]) -> None:
     every_n = eval_after.get("every_n_subsets")
     if not isinstance(every_n, int) or every_n <= 0:
         _err(errors, "pipeline.eval_after_subset.every_n_subsets must be > 0")
+    stage_cfg = _as_dict(pipeline.get("stage", {}), "pipeline.stage", errors)
+    max_subsets = stage_cfg.get("max_subsets")
+    if max_subsets is not None and (isinstance(max_subsets, bool) or not isinstance(max_subsets, int) or max_subsets <= 0):
+        _err(errors, "pipeline.stage.max_subsets must be null or a positive integer")
+    use_sampled_data = stage_cfg.get("use_sampled_data")
+    if use_sampled_data is not None and not isinstance(use_sampled_data, bool):
+        _err(errors, "pipeline.stage.use_sampled_data must be a boolean")
+    subset_archive_cfg = _as_dict(
+        stage_cfg.get("subset_archive", {}),
+        "pipeline.stage.subset_archive",
+        errors,
+    )
+    subset_archive_enabled = subset_archive_cfg.get("enabled")
+    if subset_archive_enabled is not None and not isinstance(subset_archive_enabled, bool):
+        _err(errors, "pipeline.stage.subset_archive.enabled must be a boolean")
+    subset_archive_format = subset_archive_cfg.get("format")
+    if subset_archive_format is not None and (
+        not isinstance(subset_archive_format, str)
+        or subset_archive_format not in _SUBSET_ARCHIVE_FORMATS
+    ):
+        _err(
+            errors,
+            "pipeline.stage.subset_archive.format must be one of: "
+            + ", ".join(sorted(_SUBSET_ARCHIVE_FORMATS)),
+        )
+    subset_archive_output_dir = subset_archive_cfg.get("output_dir")
+    if subset_archive_output_dir is not None and (
+        not isinstance(subset_archive_output_dir, str)
+        or not subset_archive_output_dir.strip()
+    ):
+        _err(errors, "pipeline.stage.subset_archive.output_dir must be a non-empty string")
+    subset_archive_delete = subset_archive_cfg.get("delete_original_after_archive")
+    if subset_archive_delete is not None and not isinstance(subset_archive_delete, bool):
+        _err(
+            errors,
+            "pipeline.stage.subset_archive.delete_original_after_archive must be a boolean",
+        )
 
     if training.get("backend") != "unsloth":
         _err(errors, "training.backend must be 'unsloth'")
@@ -355,6 +393,26 @@ def validate_config(cfg: dict[str, Any]) -> None:
     base_update = _as_dict(training.get("base_update", {}), "training.base_update", errors)
     if base_update.get("mode") not in {"lora", "full_weight"}:
         _err(errors, "training.base_update.mode must be 'lora' or 'full_weight'")
+    lora_cfg = _as_dict(base_update.get("lora", {}), "training.base_update.lora", errors)
+    target_modules = lora_cfg.get("target_modules")
+    if target_modules is not None:
+        if isinstance(target_modules, str):
+            if not target_modules.strip():
+                _err(errors, "training.base_update.lora.target_modules must be non-empty")
+        elif isinstance(target_modules, list):
+            if not target_modules:
+                _err(errors, "training.base_update.lora.target_modules list must be non-empty")
+            for idx, module_name in enumerate(target_modules):
+                if not isinstance(module_name, str) or not module_name.strip():
+                    _err(
+                        errors,
+                        f"training.base_update.lora.target_modules[{idx}] must be a non-empty string",
+                    )
+        else:
+            _err(
+                errors,
+                "training.base_update.lora.target_modules must be either a string or a list of strings",
+            )
 
     local_logging = _as_dict(logging_cfg.get("local", {}), "logging.local", errors)
     for key in ("enabled", "write_effective_config", "write_config_hash"):

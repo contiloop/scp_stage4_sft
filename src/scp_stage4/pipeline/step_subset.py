@@ -7,8 +7,10 @@ import hashlib
 import json
 import math
 import random
+import shutil
 import subprocess
 import sys
+import tarfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping, Sequence
@@ -23,6 +25,18 @@ from scp_stage4.schema import QeIsolationRequest, QeIsolationResponse, validate_
 
 class StepSubsetError(RuntimeError):
     """Raised when a stepwise subset contract fails."""
+
+
+_ARCHIVE_MODE_BY_FORMAT = {
+    "tar": "w",
+    "tar.gz": "w:gz",
+    "tar.xz": "w:xz",
+}
+_ARCHIVE_SUFFIX_BY_FORMAT = {
+    "tar": ".tar",
+    "tar.gz": ".tar.gz",
+    "tar.xz": ".tar.xz",
+}
 
 
 def _get_by_dotpath(cfg: Mapping[str, Any], key: str, default: Any = None) -> Any:
@@ -202,6 +216,14 @@ class PipelineContext:
     logger: LocalJsonlLogger
 
 
+@dataclass(frozen=True)
+class SubsetArchiveConfig:
+    enabled: bool
+    format: str
+    output_dir: str
+    delete_original_after_archive: bool
+
+
 def _build_context(
     *,
     config_path: str,
@@ -262,6 +284,194 @@ def _touch_failure_layout(ctx: PipelineContext) -> None:
     failures_name = str(_get_by_dotpath(ctx.cfg, "logging.local.failures_jsonl", "failures.jsonl"))
     (ctx.run_root / failures_name).touch(exist_ok=True)
     (ctx.subset_root / failures_name).touch(exist_ok=True)
+
+
+def _subset_archive_config(cfg: Mapping[str, Any]) -> SubsetArchiveConfig:
+    raw = _get_by_dotpath(cfg, "pipeline.stage.subset_archive", {})
+    if not isinstance(raw, Mapping):
+        raw = {}
+    format_name = str(raw.get("format", "tar.gz"))
+    if format_name not in _ARCHIVE_MODE_BY_FORMAT:
+        raise StepSubsetError(
+            "pipeline.stage.subset_archive.format must be one of: tar, tar.gz, tar.xz"
+        )
+    output_dir = str(raw.get("output_dir", "archives/subsets")).strip()
+    if not output_dir:
+        raise StepSubsetError("pipeline.stage.subset_archive.output_dir must be non-empty")
+    return SubsetArchiveConfig(
+        enabled=bool(raw.get("enabled", False)),
+        format=format_name,
+        output_dir=output_dir,
+        delete_original_after_archive=bool(raw.get("delete_original_after_archive", False)),
+    )
+
+
+def _subset_archive_paths(
+    *,
+    run_root: Path,
+    subset_idx: int,
+    archive_cfg: SubsetArchiveConfig,
+) -> tuple[Path, Path]:
+    stem = f"subset_{subset_idx:03d}"
+    archive_root = run_root / archive_cfg.output_dir
+    suffix = _ARCHIVE_SUFFIX_BY_FORMAT[archive_cfg.format]
+    return archive_root / f"{stem}{suffix}", archive_root / f"{stem}.manifest.json"
+
+
+def _subset_inventory(subset_root: Path) -> list[str]:
+    files = [path for path in subset_root.rglob("*") if path.is_file()]
+    return sorted(str(path.relative_to(subset_root)) for path in files)
+
+
+def _archive_subset_if_configured(
+    *,
+    ctx: PipelineContext,
+    stage_completed: bool,
+    counts: Mapping[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    archive_cfg = _subset_archive_config(ctx.cfg)
+    if not archive_cfg.enabled:
+        return None
+
+    subset_root = ctx.subset_root
+    if not subset_root.exists():
+        raise StepSubsetError(f"subset root missing for archive: {subset_root}")
+
+    inventory = _subset_inventory(subset_root)
+    if not inventory:
+        raise StepSubsetError(f"subset root has no files to archive: {subset_root}")
+
+    archive_path, manifest_path = _subset_archive_paths(
+        run_root=ctx.run_root,
+        subset_idx=ctx.subset_idx,
+        archive_cfg=archive_cfg,
+    )
+    archive_path.parent.mkdir(parents=True, exist_ok=True)
+    if archive_path.exists():
+        archive_path.unlink()
+
+    with tarfile.open(archive_path, _ARCHIVE_MODE_BY_FORMAT[archive_cfg.format]) as handle:
+        handle.add(subset_root, arcname=f"subset_{ctx.subset_idx:03d}")
+
+    manifest = {
+        "status": "ok",
+        "run_id": ctx.run_id,
+        "subset_idx": ctx.subset_idx,
+        "config_hash": ctx.cfg_hash,
+        "format": archive_cfg.format,
+        "archive_path": str(archive_path),
+        "subset_path": str(subset_root),
+        "file_count": len(inventory),
+        "files": inventory,
+        "counts": dict(counts) if counts is not None else None,
+    }
+    _write_json_file(manifest_path, manifest)
+
+    deleted_original = False
+    if archive_cfg.delete_original_after_archive and stage_completed:
+        shutil.rmtree(subset_root)
+        subset_root.mkdir(parents=True, exist_ok=True)
+        _write_json_file(
+            subset_root / "ARCHIVED.json",
+            {
+                "status": "archived",
+                "run_id": ctx.run_id,
+                "subset_idx": ctx.subset_idx,
+                "config_hash": ctx.cfg_hash,
+                "archive_path": str(archive_path),
+                "manifest_path": str(manifest_path),
+            },
+        )
+        deleted_original = True
+
+    archive_rel = str(archive_path.relative_to(ctx.run_root))
+    manifest_rel = str(manifest_path.relative_to(ctx.run_root))
+    archive_bytes = archive_path.stat().st_size
+    ctx.logger.log_event(
+        context=_context_for_phase(ctx, "archive-subset"),
+        event_type="phase_completed",
+        status="ok",
+        artifact_path=archive_rel,
+        metrics={
+            "archived_file_count": len(inventory),
+            "archive_bytes": archive_bytes,
+            "deleted_original_subset_dir": 1 if deleted_original else 0,
+        },
+        extras={"manifest_path": manifest_rel},
+    )
+    ctx.logger.log_metrics(
+        context=_context_for_phase(ctx, "archive-subset"),
+        metrics={
+            "subset/archive_file_count": len(inventory),
+            "subset/archive_size_bytes": archive_bytes,
+            "subset/archive_deleted_original": 1 if deleted_original else 0,
+        },
+        metric_group="subset",
+    )
+    _touch_failure_layout(ctx)
+
+    return {
+        "enabled": True,
+        "archive_path": str(archive_path),
+        "manifest_path": str(manifest_path),
+        "file_count": len(inventory),
+        "archive_size_bytes": archive_bytes,
+        "deleted_original_subset_dir": deleted_original,
+    }
+
+
+def _finalize_stage_archive_cleanup(
+    *,
+    ctx: PipelineContext,
+    subset_indices: Sequence[int],
+) -> int:
+    archive_cfg = _subset_archive_config(ctx.cfg)
+    if not archive_cfg.enabled or not archive_cfg.delete_original_after_archive:
+        return 0
+
+    deleted_count = 0
+    for subset_idx in subset_indices:
+        archive_path, manifest_path = _subset_archive_paths(
+            run_root=ctx.run_root,
+            subset_idx=subset_idx,
+            archive_cfg=archive_cfg,
+        )
+        if not archive_path.exists() or not manifest_path.exists():
+            raise StepSubsetError(
+                "subset archive cleanup requires existing archive+manifest; "
+                f"missing for subset_{subset_idx:03d}"
+            )
+        subset_root = _subset_dir(ctx.run_root, subset_idx)
+        if subset_root.exists():
+            shutil.rmtree(subset_root)
+        subset_root.mkdir(parents=True, exist_ok=True)
+        _write_json_file(
+            subset_root / "ARCHIVED.json",
+            {
+                "status": "archived",
+                "run_id": ctx.run_id,
+                "subset_idx": subset_idx,
+                "config_hash": ctx.cfg_hash,
+                "archive_path": str(archive_path),
+                "manifest_path": str(manifest_path),
+            },
+        )
+        context = RequiredLogContext(
+            run_id=ctx.run_id,
+            subset_idx=subset_idx,
+            phase="archive-subset",
+            config_hash=ctx.cfg_hash,
+        )
+        ctx.logger.log_event(
+            context=context,
+            event_type="subset_archive_pruned",
+            status="ok",
+            artifact_path=str(archive_path.relative_to(ctx.run_root)),
+            extras={"manifest_path": str(manifest_path.relative_to(ctx.run_root))},
+        )
+        deleted_count += 1
+
+    return deleted_count
 
 
 def _log_cli_failure(
@@ -1363,7 +1573,14 @@ def _subprocess_api_responses(
     ctx: PipelineContext,
     requests: Sequence[Mapping[str, Any]],
 ) -> list[dict[str, Any]]:
-    runtime_requests = [dict(row) for row in requests]
+    runtime_requests = []
+    for row in requests:
+        payload = dict(row)
+        payload["runtime_config"] = {
+            "external_api": _get_by_dotpath(ctx.cfg, "external_api", {}),
+            "prompts": _get_by_dotpath(ctx.cfg, "prompts", {}),
+        }
+        runtime_requests.append(payload)
     runtime_responses = _run_subprocess_jsonl(
         ctx=ctx,
         section="external_api",
@@ -1593,6 +1810,7 @@ def run_subset(
     subset_size_override: int | None = None,
     use_prepared_data: bool = True,
     use_sampled_data: bool = True,
+    stage_completed: bool = True,
 ) -> dict[str, Any]:
     infer_q1 = run_infer_q1(
         config_path=config_path,
@@ -1665,6 +1883,14 @@ def run_subset(
             "train": train["train_rows"],
         },
     }
+    archive = _archive_subset_if_configured(
+        ctx=ctx,
+        stage_completed=stage_completed,
+        counts=summary["counts"],
+    )
+    if archive is not None:
+        summary["subset_archive"] = archive
+
     (ctx.run_root / "run_subset_summary.json").write_text(
         json.dumps(summary, ensure_ascii=False, sort_keys=True, indent=2) + "\n",
         encoding="utf-8",
@@ -1743,8 +1969,14 @@ def run_stage(
             subset_size_override=subset_size,
             use_prepared_data=True,
             use_sampled_data=use_sampled_data,
+            stage_completed=False,
         )
         subset_summaries.append(summary)
+
+    archived_subset_dirs_pruned = _finalize_stage_archive_cleanup(
+        ctx=ctx,
+        subset_indices=[int(summary["subset_idx"]) for summary in subset_summaries],
+    )
 
     stage_summary = {
         "run_id": ctx.run_id,
@@ -1753,6 +1985,7 @@ def run_stage(
         "subset_size": subset_size,
         "subsets_run": len(subset_summaries),
         "train_rows": len(train_rows),
+        "archived_subset_dirs_pruned": archived_subset_dirs_pruned,
         "subsets": subset_summaries,
     }
     (ctx.run_root / "run_stage_summary.json").write_text(

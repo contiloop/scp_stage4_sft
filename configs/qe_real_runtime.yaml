@@ -1,0 +1,10 @@
+{
+  "qe": {
+    "runtime": {
+      "mode": "subprocess",
+      "subprocess": {
+        "command": ["python3", "-m", "scp_stage4.pipeline.workers.qe_worker"]
+      }
+    }
+  }
+}

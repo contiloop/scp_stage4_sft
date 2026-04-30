@@ -35,6 +35,7 @@ class SmokeLocalTests(unittest.TestCase):
             self.run_root / "events.jsonl",
             self.run_root / "metrics.jsonl",
             self.run_root / "failures.jsonl",
+            self.run_root / "preference_pairs.jsonl",
             self.run_root / "smoke_summary.json",
             subset_root / "input.jsonl",
             subset_root / "q1.jsonl",
@@ -43,6 +44,7 @@ class SmokeLocalTests(unittest.TestCase):
             subset_root / "selected.jsonl",
             subset_root / "api_requests.jsonl",
             subset_root / "api.jsonl",
+            subset_root / "preference_pairs.jsonl",
             subset_root / "events.jsonl",
             subset_root / "metrics.jsonl",
             subset_root / "failures.jsonl",
@@ -66,6 +68,7 @@ class SmokeLocalTests(unittest.TestCase):
         self.assertGreaterEqual(counts["selected"], 1)
         self.assertEqual(counts["selected"], counts["api_requests"])
         self.assertEqual(counts["selected"], counts["api"])
+        self.assertEqual(counts["selected"], counts["preference_pairs"])
         self.assertEqual(counts["selected"], counts["train"])
 
         input_rows = read_jsonl(subset_root / "input.jsonl")
@@ -75,6 +78,8 @@ class SmokeLocalTests(unittest.TestCase):
         selected_rows = read_jsonl(subset_root / "selected.jsonl")
         api_requests = read_jsonl(subset_root / "api_requests.jsonl")
         api_rows = read_jsonl(subset_root / "api.jsonl")
+        preference_rows = read_jsonl(subset_root / "preference_pairs.jsonl")
+        run_preference_rows = read_jsonl(self.run_root / "preference_pairs.jsonl")
 
         input_ids = [row["id"] for row in input_rows]
         self.assertEqual([row["id"] for row in q1_rows], input_ids)
@@ -85,8 +90,12 @@ class SmokeLocalTests(unittest.TestCase):
         self.assertTrue(set(selected_ids).issubset(set(input_ids)))
         self.assertEqual([row["id"] for row in api_requests], selected_ids)
         self.assertEqual([row["id"] for row in api_rows], selected_ids)
+        self.assertEqual([row["id"] for row in preference_rows], selected_ids)
+        self.assertEqual([row["id"] for row in run_preference_rows], selected_ids)
         validate_artifact_rows(api_requests, "api_requests")
         validate_artifact_rows(api_rows, "api")
+        validate_artifact_rows(preference_rows, "preference_pairs")
+        validate_artifact_rows(run_preference_rows, "preference_pairs")
 
         summary_json = json.loads((self.run_root / "smoke_summary.json").read_text())
         self.assertEqual(summary_json["run_id"], self.run_id)

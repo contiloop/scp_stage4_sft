@@ -42,6 +42,7 @@ def test_schema_validation_pass() -> None:
         ("selected.happy.jsonl", "selected"),
         ("api_requests.happy.jsonl", "api_requests"),
         ("api.happy.jsonl", "api"),
+        ("preference_pairs.happy.jsonl", "preference_pairs"),
         ("train.happy.jsonl", "train"),
     ]
 
@@ -126,6 +127,7 @@ def test_row_id_preservation_pass() -> None:
     selected_rows = _fixture_rows("selected.happy.jsonl")
     api_requests_rows = _fixture_rows("api_requests.happy.jsonl")
     api_rows = _fixture_rows("api.happy.jsonl")
+    preference_rows = _fixture_rows("preference_pairs.happy.jsonl")
     train_rows = _fixture_rows("train.happy.jsonl")
 
     validate_row_id_preservation(input_rows, q1_rows, base_name="input", candidate_name="q1")
@@ -151,6 +153,13 @@ def test_row_id_preservation_pass() -> None:
         allow_subset=True,
         base_name="api_requests",
         candidate_name="api",
+    )
+    validate_row_id_preservation(
+        api_rows,
+        preference_rows,
+        allow_subset=True,
+        base_name="api",
+        candidate_name="preference_pairs",
     )
     validate_row_id_preservation(
         api_rows,

@@ -59,6 +59,7 @@ def test_run_subset_writes_stepwise_artifact_chain() -> None:
             _run_root(run_id) / "events.jsonl",
             _run_root(run_id) / "metrics.jsonl",
             _run_root(run_id) / "failures.jsonl",
+            _run_root(run_id) / "preference_pairs.jsonl",
             _run_root(run_id) / "run_subset_summary.json",
             subset_root / "input.jsonl",
             subset_root / "q1.jsonl",
@@ -69,6 +70,7 @@ def test_run_subset_writes_stepwise_artifact_chain() -> None:
             subset_root / "clean_base.json",
             subset_root / "api_requests.jsonl",
             subset_root / "api.jsonl",
+            subset_root / "preference_pairs.jsonl",
             subset_root / "events.jsonl",
             subset_root / "metrics.jsonl",
             subset_root / "failures.jsonl",
@@ -84,6 +86,8 @@ def test_run_subset_writes_stepwise_artifact_chain() -> None:
         selected_rows = read_jsonl(subset_root / "selected.jsonl")
         api_requests = read_jsonl(subset_root / "api_requests.jsonl")
         api_rows = read_jsonl(subset_root / "api.jsonl")
+        preference_rows = read_jsonl(subset_root / "preference_pairs.jsonl")
+        run_preference_rows = read_jsonl(_run_root(run_id) / "preference_pairs.jsonl")
         train_rows = read_jsonl(subset_root / "train_final" / "train_rows.jsonl")
 
         input_ids = [row["id"] for row in input_rows]
@@ -95,11 +99,14 @@ def test_run_subset_writes_stepwise_artifact_chain() -> None:
         assert set(selected_ids).issubset(set(input_ids))
         assert [row["id"] for row in api_requests] == selected_ids
         assert [row["id"] for row in api_rows] == selected_ids
+        assert [row["id"] for row in preference_rows] == selected_ids
+        assert [row["id"] for row in run_preference_rows] == selected_ids
         assert [row["id"] for row in train_rows] == selected_ids
 
         assert summary["counts"]["q1"] == len(q1_rows)
         assert summary["counts"]["q2"] == len(q2_rows)
         assert summary["counts"]["selected"] == len(selected_rows)
+        assert summary["preference_pairs_run_total"] == len(run_preference_rows)
     finally:
         _cleanup(run_id)
 

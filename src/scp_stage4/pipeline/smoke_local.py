@@ -269,6 +269,55 @@ def _make_api_artifacts(
     return requests, responses
 
 
+def _derive_error_type_from_api_row(row: dict[str, Any]) -> str:
+    status = str(row.get("status", "failed"))
+    if status == "ok":
+        return "none"
+    if status in {"skipped", "filtered", "needs_review"}:
+        return status
+    reason = str(row.get("reason", "") or "").lower()
+    error = str(row.get("error", "") or "").lower()
+    if "timeout" in reason or "timeout" in error:
+        return "timeout"
+    if error.strip():
+        return "runtime_error"
+    return "failed"
+
+
+def _build_preference_pairs(api_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    pairs: list[dict[str, Any]] = []
+    for row in api_rows:
+        pairs.append(
+            {
+                "id": row["id"],
+                "row_id": row["row_id"],
+                "request_id": row["request_id"],
+                "run_id": row["run_id"],
+                "subset_idx": row["subset_idx"],
+                "dataset": row["dataset"],
+                "source": row["source"],
+                "metadata": row["metadata"],
+                "student": row["student"],
+                "gold": row.get("gold"),
+                "status": row["status"],
+                "error_type": _derive_error_type_from_api_row(row),
+                "teacher_label": row["teacher_label"],
+                "reason": row.get("reason"),
+                "error": row.get("error"),
+                "provider": row.get("provider"),
+                "model": row.get("model"),
+                "prompt_version": row.get("prompt_version"),
+                "prompt_hash": row.get("prompt_hash"),
+                "usage": row.get("usage"),
+                "cost": row.get("cost"),
+                "latency_ms": row.get("latency_ms"),
+                "attempt": row.get("attempt"),
+                "config_hash": row.get("config_hash"),
+            }
+        )
+    return pairs
+
+
 def _assert_row_id_contract(
     input_rows: list[dict[str, Any]],
     q1_rows: list[dict[str, Any]],
@@ -277,6 +326,7 @@ def _assert_row_id_contract(
     selected_rows: list[dict[str, Any]],
     api_requests: list[dict[str, Any]],
     api_rows: list[dict[str, Any]],
+    preference_rows: list[dict[str, Any]],
     train_rows: list[dict[str, Any]],
 ) -> None:
     input_ids = [row["id"] for row in input_rows]
@@ -300,6 +350,10 @@ def _assert_row_id_contract(
     api_ids = [row["id"] for row in api_rows]
     if api_ids != selected_ids:
         raise SmokeValidationError("api.jsonl row_id mismatch")
+
+    preference_ids = [row["id"] for row in preference_rows]
+    if preference_ids != selected_ids:
+        raise SmokeValidationError("preference_pairs.jsonl row_id mismatch")
 
     train_ids = [row["id"] for row in train_rows]
     if train_ids != selected_ids:
@@ -352,6 +406,8 @@ def run_smoke(
     api_requests, api_rows = _make_api_artifacts(selected_rows, run_id, cfg, cfg_hash)
     api_requests = validate_artifact_rows(api_requests, "api_requests")
     api_rows = validate_artifact_rows(api_rows, "api")
+    preference_rows = _build_preference_pairs(api_rows)
+    preference_rows = validate_artifact_rows(preference_rows, "preference_pairs")
     train_rows = [
         {
             "id": row["id"],
@@ -372,6 +428,7 @@ def run_smoke(
         selected_rows,
         api_requests,
         api_rows,
+        preference_rows,
         train_rows,
     )
 
@@ -418,6 +475,8 @@ def run_smoke(
     )
     write_jsonl(subset_root / "api_requests.jsonl", api_requests)
     write_jsonl(subset_root / "api.jsonl", api_rows)
+    write_jsonl(subset_root / "preference_pairs.jsonl", preference_rows)
+    write_jsonl(run_root / "preference_pairs.jsonl", preference_rows)
     write_jsonl(subset_root / "train_final" / "train_rows.jsonl", train_rows)
 
     local_cfg = _get_by_dotpath(cfg, "logging.local", {})
@@ -468,6 +527,7 @@ def run_smoke(
             "clean_base": 1,
             "api_requests": len(api_requests),
             "api": len(api_rows),
+            "preference_pairs": len(preference_rows),
             "train": len(train_rows),
         },
     }

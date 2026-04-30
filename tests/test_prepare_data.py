@@ -14,6 +14,7 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 from scp_stage4.data import read_jsonl  # noqa: E402
+from scp_stage4.pipeline import prepare_data as prepare_data_module  # noqa: E402
 from scp_stage4.pipeline.prepare_data import run_prepare_data  # noqa: E402
 from scp_stage4.schema import validate_artifact_rows  # noqa: E402
 
@@ -98,6 +99,35 @@ def test_prepare_data_overflow_split_creates_chunk_ids(tmp_path: Path) -> None:
         os.chdir(old_cwd)
 
 
+def test_split_long_source_uses_batched_sentence_counts() -> None:
+    row = {
+        "id": "row-001",
+        "source": "One short sentence. Another short sentence. Third sentence. Fourth sentence.",
+        "metadata": {"parent_id": None, "chunk_idx": None},
+    }
+    exact_calls = {"count": 0}
+
+    def _token_count(text: str) -> int:
+        exact_calls["count"] += 1
+        return len(text.split())
+
+    def _token_count_batch(texts: list[str]) -> list[int]:
+        return [len(text.split()) for text in texts]
+
+    chunks = prepare_data_module._split_long_source(
+        row,
+        token_count=_token_count,
+        token_count_batch=_token_count_batch,
+        max_tokens_per_chunk=8,
+        max_chunks=8,
+        fallback_for_long_sentence="split",
+        on_max_chunks_exceeded="skip",
+    )
+    assert chunks
+    # Sentence token costs are batched, so exact per-string counts should stay near chunk count.
+    assert exact_calls["count"] <= len(chunks) + 1
+
+
 def test_prepare_data_local_jsonl_runtime_uses_configured_source(tmp_path: Path) -> None:
     workdir = tmp_path / "work_local_jsonl"
     workdir.mkdir(parents=True, exist_ok=True)
@@ -178,6 +208,7 @@ def test_prepare_data_emits_progress_logs(tmp_path: Path, capsys) -> None:
         )
         captured = capsys.readouterr()
         assert "phase=normalize" in captured.err
+        assert "phase=normalize-summary" in captured.err
         assert "phase=split" in captured.err
         assert "rows_per_sec=" in captured.err
     finally:
@@ -223,6 +254,60 @@ def test_prepare_data_streaming_split_keeps_exact_eval_count(tmp_path: Path) -> 
         assert len(eval_rows) == 2
         assert len(train_rows) == 8
         assert len(sampled_rows) == 3
+    finally:
+        os.chdir(old_cwd)
+
+
+def test_prepare_data_summary_includes_length_policy_skip_counts(tmp_path: Path) -> None:
+    workdir = tmp_path / "work_length_policy_summary"
+    workdir.mkdir(parents=True, exist_ok=True)
+    raw_path = workdir / "raw.jsonl"
+
+    long_sentence = " ".join(f"tok{i}" for i in range(220))
+    raw_path.write_text(
+        json.dumps(
+            {"id": "row-skip", "source_text": long_sentence},
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        + "\n"
+        + json.dumps(
+            {"id": "row-keep", "source_text": "short text kept"},
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    old_cwd = Path.cwd()
+    try:
+        os.chdir(workdir)
+        summary = run_prepare_data(
+            config_path=str(ROOT / "configs" / "scp_stage4.yaml"),
+            overrides=[
+                "data.runtime.mode=local_jsonl",
+                f"data.runtime.local_jsonl_path={raw_path}",
+                "data.split.eval_ratio=0",
+                "data.subset_size=2",
+                "data.length.max_source_tokens=32",
+                "data.length.max_total_tokens=128",
+                "data.length.prompt_template_tokens=8",
+                "data.length.min_available_output_tokens=8",
+                "data.length.safety_margin_tokens=8",
+                "data.length.overflow=split",
+                "data.length.split.max_source_tokens_per_chunk=32",
+                "data.length.split.max_chunks_per_row=4",
+                "data.length.split.fallback_for_long_sentence=skip",
+                "data.length.split.on_max_chunks_exceeded=skip",
+                "data.length.mode=whitespace",
+            ],
+        )
+        length_policy = summary["length_policy"]
+        assert length_policy["input_rows"] == 2
+        assert length_policy["output_rows"] == 1
+        assert length_policy["skipped_long_sentence"] == 1
+        assert length_policy["skipped_total"] == 1
     finally:
         os.chdir(old_cwd)
 

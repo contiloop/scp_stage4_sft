@@ -20,6 +20,7 @@ _ARTIFACT_NAMES = {
     "selected",
     "api_requests",
     "api",
+    "preference_pairs",
     "train",
 }
 
@@ -118,6 +119,7 @@ def _row_id_chain_from_fixture_dir(fixture_dir: Path) -> list[tuple[Path, Path, 
         "selected": fixture_dir / "selected.happy.jsonl",
         "api_requests": fixture_dir / "api_requests.happy.jsonl",
         "api": fixture_dir / "api.happy.jsonl",
+        "preference_pairs": fixture_dir / "preference_pairs.happy.jsonl",
         "train": fixture_dir / "train.happy.jsonl",
     }
     if all(path.exists() for path in mapping.values()):
@@ -135,6 +137,13 @@ def _row_id_chain_from_fixture_dir(fixture_dir: Path) -> list[tuple[Path, Path, 
                     "api_requests",
                 ),
                 (mapping["api_requests"], mapping["api"], True, "api_requests", "api"),
+                (
+                    mapping["api"],
+                    mapping["preference_pairs"],
+                    True,
+                    "api",
+                    "preference_pairs",
+                ),
                 (mapping["api"], mapping["train"], True, "api", "train"),
             ]
         )
@@ -153,6 +162,7 @@ def _row_id_chain_from_run_root(run_root: Path) -> list[tuple[Path, Path, bool, 
             "selected": subset_root / "selected.jsonl",
             "api_requests": subset_root / "api_requests.jsonl",
             "api": subset_root / "api.jsonl",
+            "preference_pairs": subset_root / "preference_pairs.jsonl",
             "train": subset_root / "train_final" / "train_rows.jsonl",
         }
         if not all(path.exists() for path in mapping.values()):
@@ -171,6 +181,13 @@ def _row_id_chain_from_run_root(run_root: Path) -> list[tuple[Path, Path, bool, 
                     "api_requests",
                 ),
                 (mapping["api_requests"], mapping["api"], True, "api_requests", "api"),
+                (
+                    mapping["api"],
+                    mapping["preference_pairs"],
+                    True,
+                    "api",
+                    "preference_pairs",
+                ),
                 (mapping["api"], mapping["train"], True, "api", "train"),
             ]
         )

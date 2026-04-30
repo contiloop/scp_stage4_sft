@@ -16,6 +16,7 @@ ArtifactName: TypeAlias = Literal[
     "selected",
     "api_requests",
     "api",
+    "preference_pairs",
     "train",
 ]
 StatusValue: TypeAlias = Literal["ok", "skipped", "filtered", "needs_review", "failed"]
@@ -827,6 +828,152 @@ class ApiRow:
 
 
 @dataclass(frozen=True)
+class PreferencePairRow:
+    id: str
+    row_id: str
+    request_id: str
+    run_id: str
+    subset_idx: int
+    dataset: str
+    source: str
+    metadata: RowMetadata
+    student: str
+    gold: str | None
+    status: StatusValue
+    error_type: str
+    teacher_label: str
+    reason: str | None = None
+    error: str | None = None
+    provider: str | None = None
+    model: str | None = None
+    prompt_version: str | None = None
+    prompt_hash: str | None = None
+    usage: ApiUsage | None = None
+    cost: ApiCost | None = None
+    latency_ms: float | None = None
+    attempt: int | None = None
+    config_hash: str | None = None
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> "PreferencePairRow":
+        data = _ensure_mapping(data, context="preference_pairs")
+        _reject_extra_keys(
+            data,
+            allowed={
+                "id",
+                "row_id",
+                "request_id",
+                "run_id",
+                "subset_idx",
+                "dataset",
+                "source",
+                "metadata",
+                "student",
+                "gold",
+                "status",
+                "error_type",
+                "teacher_label",
+                "reason",
+                "error",
+                "provider",
+                "model",
+                "prompt_version",
+                "prompt_hash",
+                "usage",
+                "cost",
+                "latency_ms",
+                "attempt",
+                "config_hash",
+            },
+            context="preference_pairs",
+        )
+        status = _require_status(data, "status", context="preference_pairs")
+        gold = _optional_str(data, "gold", context="preference_pairs")
+        if status == "ok" and (gold is None or not gold.strip()):
+            raise SchemaValidationError(
+                "preference_pairs.gold is required when preference_pairs.status=ok"
+            )
+
+        error_type = _require_str(data, "error_type", context="preference_pairs")
+        if status == "ok" and error_type != "none":
+            raise SchemaValidationError(
+                "preference_pairs.error_type must be 'none' when preference_pairs.status=ok"
+            )
+        if status != "ok" and error_type == "none":
+            raise SchemaValidationError(
+                "preference_pairs.error_type must not be 'none' when preference_pairs.status!=ok"
+            )
+
+        usage_data = data.get("usage")
+        usage = None
+        if usage_data is not None:
+            usage = ApiUsage.from_dict(_ensure_mapping(usage_data, context="api_usage"))
+        cost_data = data.get("cost")
+        cost = None
+        if cost_data is not None:
+            cost = ApiCost.from_dict(_ensure_mapping(cost_data, context="api_cost"))
+        return cls(
+            id=_require_str(data, "id", context="preference_pairs"),
+            row_id=_require_str(data, "row_id", context="preference_pairs"),
+            request_id=_require_str(data, "request_id", context="preference_pairs"),
+            run_id=_require_str(data, "run_id", context="preference_pairs"),
+            subset_idx=_require_int(data, "subset_idx", context="preference_pairs"),
+            dataset=_require_str(data, "dataset", context="preference_pairs"),
+            source=_require_str(data, "source", context="preference_pairs"),
+            metadata=RowMetadata.from_dict(
+                _ensure_mapping(
+                    _require_key(data, "metadata", context="preference_pairs"),
+                    context="metadata",
+                )
+            ),
+            student=_require_str(data, "student", context="preference_pairs"),
+            gold=gold,
+            status=status,
+            error_type=error_type,
+            teacher_label=_require_str(data, "teacher_label", context="preference_pairs"),
+            reason=_optional_str(data, "reason", context="preference_pairs"),
+            error=_optional_str(data, "error", context="preference_pairs"),
+            provider=_optional_str(data, "provider", context="preference_pairs"),
+            model=_optional_str(data, "model", context="preference_pairs"),
+            prompt_version=_optional_str(data, "prompt_version", context="preference_pairs"),
+            prompt_hash=_optional_str(data, "prompt_hash", context="preference_pairs"),
+            usage=usage,
+            cost=cost,
+            latency_ms=_optional_float(data, "latency_ms", context="preference_pairs"),
+            attempt=_optional_int(data, "attempt", context="preference_pairs"),
+            config_hash=_optional_str(data, "config_hash", context="preference_pairs"),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "row_id": self.row_id,
+            "request_id": self.request_id,
+            "run_id": self.run_id,
+            "subset_idx": self.subset_idx,
+            "dataset": self.dataset,
+            "source": self.source,
+            "metadata": self.metadata.to_dict(),
+            "student": self.student,
+            "gold": self.gold,
+            "status": self.status,
+            "error_type": self.error_type,
+            "teacher_label": self.teacher_label,
+            "reason": self.reason,
+            "error": self.error,
+            "provider": self.provider,
+            "model": self.model,
+            "prompt_version": self.prompt_version,
+            "prompt_hash": self.prompt_hash,
+            "usage": self.usage.to_dict() if self.usage is not None else None,
+            "cost": self.cost.to_dict() if self.cost is not None else None,
+            "latency_ms": self.latency_ms,
+            "attempt": self.attempt,
+            "config_hash": self.config_hash,
+        }
+
+
+@dataclass(frozen=True)
 class TrainRow:
     id: str
     dataset: str
@@ -869,6 +1016,7 @@ _ARTIFACT_TO_MODEL = {
     "selected": SelectedRow,
     "api_requests": ApiRequestRow,
     "api": ApiRow,
+    "preference_pairs": PreferencePairRow,
     "train": TrainRow,
 }
 

@@ -371,8 +371,11 @@ Artifact rule:
 
 - `api_requests.jsonl` stores rendered, sanitized request records before provider execution
 - `api.jsonl` stores one final response/status row per request after retry handling
-- both files must share `id`, `request_id`, and `row_id`
+- `subsets/subset_{idx}/preference_pairs.jsonl` stores one convenience row per request for that subset
+- `artifacts/runs/{run_id}/preference_pairs.jsonl` stores run-level merged preference rows across all processed subsets
+- all preference/API files must share `id`, `request_id`, and `row_id`
 - `api.jsonl` is the artifact consumed by base update training
+- `preference_pairs.jsonl` should include at least `subset_idx`, `source`, `student`, `gold`, `status`, and `error_type`
 
 ---
 

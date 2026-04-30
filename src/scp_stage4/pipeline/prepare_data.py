@@ -15,6 +15,7 @@ import struct
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping
 
@@ -228,6 +229,43 @@ class _TokenCounter:
 
     def count_batch(self, texts: list[str]) -> list[int]:
         return self._count_batch(texts)
+
+
+@dataclass
+class _LengthPolicyStats:
+    input_rows: int = 0
+    output_rows: int = 0
+    split_input_rows: int = 0
+    split_output_rows: int = 0
+    skipped_overflow_policy: int = 0
+    skipped_truncate_budget: int = 0
+    skipped_long_sentence: int = 0
+    skipped_max_chunks_exceeded: int = 0
+    skipped_split_empty: int = 0
+
+    @property
+    def skipped_total(self) -> int:
+        return (
+            self.skipped_overflow_policy
+            + self.skipped_truncate_budget
+            + self.skipped_long_sentence
+            + self.skipped_max_chunks_exceeded
+            + self.skipped_split_empty
+        )
+
+    def as_dict(self) -> dict[str, int]:
+        return {
+            "input_rows": self.input_rows,
+            "output_rows": self.output_rows,
+            "split_input_rows": self.split_input_rows,
+            "split_output_rows": self.split_output_rows,
+            "skipped_overflow_policy": self.skipped_overflow_policy,
+            "skipped_truncate_budget": self.skipped_truncate_budget,
+            "skipped_long_sentence": self.skipped_long_sentence,
+            "skipped_max_chunks_exceeded": self.skipped_max_chunks_exceeded,
+            "skipped_split_empty": self.skipped_split_empty,
+            "skipped_total": self.skipped_total,
+        }
 
 
 def _normalize_whitespace(text: str) -> str:
@@ -772,6 +810,8 @@ def _split_long_source(
     row: Mapping[str, Any],
     *,
     token_count: Callable[[str], int],
+    token_count_batch: Callable[[list[str]], list[int]],
+    stats: _LengthPolicyStats | None = None,
     max_tokens_per_chunk: int,
     max_chunks: int,
     fallback_for_long_sentence: str,
@@ -779,15 +819,55 @@ def _split_long_source(
 ) -> list[dict[str, Any]]:
     source = str(row["source"])
     chunks: list[str] = []
-    current: list[str] = []
+    sentences = _sentence_units(source)
+    if not sentences:
+        if stats is not None:
+            stats.skipped_split_empty += 1
+        return []
+
+    # Compute per-sentence token costs in batches. Using prefixed sentence costs gives
+    # an upper-bound when appending to an existing chunk and avoids repeated candidate
+    # tokenization on every sentence boundary.
+    sentence_token_counts = token_count_batch(sentences)
+    prefixed_sentence_token_counts = token_count_batch([f" {sentence}" for sentence in sentences])
+    if len(sentence_token_counts) != len(sentences) or len(prefixed_sentence_token_counts) != len(
+        sentences
+    ):
+        raise PrepareDataError("tokenizer sentence counting returned mismatched batch length")
+
+    current_sentences: list[str] = []
+    current_upper_tokens = 0
 
     def flush_current() -> None:
+        nonlocal current_upper_tokens
+        if not current_sentences:
+            return
+        pending = list(current_sentences)
+        current_sentences.clear()
+        current_upper_tokens = 0
+        chunk = _normalize_whitespace(" ".join(pending))
+        if not chunk:
+            return
+        # Guard against tokenizer implementations where additive sentence accounting
+        # is not strictly conservative.
+        if token_count(chunk) <= max_tokens_per_chunk:
+            chunks.append(chunk)
+            return
+        rebuilt: list[str] = []
+        current: list[str] = []
+        for sentence in pending:
+            candidate = _normalize_whitespace(" ".join([*current, sentence]))
+            if current and token_count(candidate) > max_tokens_per_chunk:
+                rebuilt.append(_normalize_whitespace(" ".join(current)))
+                current = [sentence]
+                continue
+            current.append(sentence)
         if current:
-            chunks.append(_normalize_whitespace(" ".join(current)))
-            current.clear()
+            rebuilt.append(_normalize_whitespace(" ".join(current)))
+        chunks.extend([part for part in rebuilt if part])
 
-    for sentence in _sentence_units(source):
-        sentence_tokens = token_count(sentence)
+    for sentence_idx, sentence in enumerate(sentences):
+        sentence_tokens = sentence_token_counts[sentence_idx]
         if sentence_tokens > max_tokens_per_chunk:
             flush_current()
             if fallback_for_long_sentence == "truncate":
@@ -797,19 +877,32 @@ def _split_long_source(
                 for start in range(0, len(words), max_tokens_per_chunk):
                     chunks.append(" ".join(words[start : start + max_tokens_per_chunk]))
             else:
+                if stats is not None:
+                    stats.skipped_long_sentence += 1
                 return []
             continue
 
-        candidate = _normalize_whitespace(" ".join([*current, sentence]))
-        if current and token_count(candidate) > max_tokens_per_chunk:
-            flush_current()
-        current.append(sentence)
+        if current_sentences:
+            append_cost = prefixed_sentence_token_counts[sentence_idx]
+            if current_upper_tokens + append_cost > max_tokens_per_chunk:
+                flush_current()
+                current_sentences.append(sentence)
+                current_upper_tokens = sentence_tokens
+                continue
+            current_sentences.append(sentence)
+            current_upper_tokens += append_cost
+            continue
+
+        current_sentences.append(sentence)
+        current_upper_tokens = sentence_tokens
     flush_current()
 
     chunks = [chunk for chunk in chunks if chunk]
     if len(chunks) > max_chunks:
         if on_max_chunks_exceeded == "error":
             raise PrepareDataError(f"row {row['id']} exceeded max_chunks_per_row={max_chunks}")
+        if stats is not None:
+            stats.skipped_max_chunks_exceeded += 1
         return []
 
     out_rows: list[dict[str, Any]] = []
@@ -866,6 +959,8 @@ def _resolved_runtime_token_limits(cfg: Mapping[str, Any]) -> tuple[int, int]:
 def _iter_rows_with_length_policy(
     rows: Iterable[dict[str, Any]],
     cfg: Mapping[str, Any],
+    *,
+    stats: _LengthPolicyStats | None = None,
 ) -> Iterable[dict[str, Any]]:
     data_cfg = cfg.get("data", {})
     if not isinstance(data_cfg, Mapping):
@@ -910,6 +1005,8 @@ def _iter_rows_with_length_policy(
 
         filtered_rows: list[dict[str, Any]] = []
         for row, source_tokens in zip(pending_rows, source_token_counts):
+            if stats is not None:
+                stats.input_rows += 1
             source = str(row["source"])
             available_output_budget = (
                 runtime_max_total
@@ -922,9 +1019,13 @@ def _iter_rows_with_length_policy(
                 and available_output_budget >= min_available_output_tokens
             ):
                 filtered_rows.append(row)
+                if stats is not None:
+                    stats.output_rows += 1
                 continue
 
             if overflow == "skip":
+                if stats is not None:
+                    stats.skipped_overflow_policy += 1
                 continue
 
             if overflow == "truncate":
@@ -941,18 +1042,36 @@ def _iter_rows_with_length_policy(
                 )
                 if available_after_truncation >= min_available_output_tokens:
                     filtered_rows.append(out)
+                    if stats is not None:
+                        stats.output_rows += 1
+                elif stats is not None:
+                    stats.skipped_truncate_budget += 1
                 continue
 
-            filtered_rows.extend(
-                _split_long_source(
-                    row,
-                    token_count=token_counter.count,
-                    max_tokens_per_chunk=max_tokens_per_chunk,
-                    max_chunks=max_chunks,
-                    fallback_for_long_sentence=fallback_for_long_sentence,
-                    on_max_chunks_exceeded=on_max_chunks_exceeded,
-                )
+            if stats is not None:
+                stats.split_input_rows += 1
+                skipped_before = stats.skipped_total
+            else:
+                skipped_before = None
+            split_rows = _split_long_source(
+                row,
+                token_count=token_counter.count,
+                token_count_batch=token_counter.count_batch,
+                stats=stats,
+                max_tokens_per_chunk=max_tokens_per_chunk,
+                max_chunks=max_chunks,
+                fallback_for_long_sentence=fallback_for_long_sentence,
+                on_max_chunks_exceeded=on_max_chunks_exceeded,
             )
+            if split_rows:
+                filtered_rows.extend(split_rows)
+                if stats is not None:
+                    stats.split_output_rows += len(split_rows)
+                    stats.output_rows += len(split_rows)
+            elif stats is not None and skipped_before is not None:
+                # Defensive counter for unexpected no-output split cases.
+                if stats.skipped_total == skipped_before:
+                    stats.skipped_split_empty += 1
         pending_rows.clear()
         pending_sources.clear()
         return filtered_rows
@@ -1291,6 +1410,7 @@ def run_prepare_data(
 
     rng = random.Random(split_seed)
     normalized_rows = 0
+    length_policy_stats = _LengthPolicyStats()
     try:
         writer: _ParquetStreamWriter | _JsonlStreamWriter
         if intermediate_format == "parquet":
@@ -1304,7 +1424,7 @@ def run_prepare_data(
         with writer as intermediate_writer, split_draws_path.open("wb") as split_draws_writer:
             stream = _iter_raw_rows(data_cfg)
             stream = _iter_normalized_rows(stream, data_cfg)
-            stream = _iter_rows_with_length_policy(stream, cfg)
+            stream = _iter_rows_with_length_policy(stream, cfg, stats=length_policy_stats)
             for row in stream:
                 validated = validate_artifact_row(row, "normalized")
                 intermediate_writer.write(validated)
@@ -1312,6 +1432,23 @@ def run_prepare_data(
                 normalized_rows += 1
                 normalize_progress.maybe_report(normalized_rows)
         normalize_progress.finish(normalized_rows)
+        print(
+            (
+                "[prepare-data] phase=normalize-summary "
+                f"input_rows={length_policy_stats.input_rows} "
+                f"output_rows={length_policy_stats.output_rows} "
+                f"split_input_rows={length_policy_stats.split_input_rows} "
+                f"split_output_rows={length_policy_stats.split_output_rows} "
+                f"skipped_overflow_policy={length_policy_stats.skipped_overflow_policy} "
+                f"skipped_truncate_budget={length_policy_stats.skipped_truncate_budget} "
+                f"skipped_long_sentence={length_policy_stats.skipped_long_sentence} "
+                f"skipped_max_chunks_exceeded={length_policy_stats.skipped_max_chunks_exceeded} "
+                f"skipped_split_empty={length_policy_stats.skipped_split_empty} "
+                f"skipped_total={length_policy_stats.skipped_total}"
+            ),
+            file=sys.stderr,
+            flush=True,
+        )
 
         eval_count = _target_eval_count(normalized_rows, eval_ratio)
         eval_indices = _select_eval_indices_from_draws(
@@ -1351,6 +1488,7 @@ def run_prepare_data(
         "sampled_rows": sampled_rows,
         "intermediate_format": intermediate_format,
         "progress_enabled": progress_enabled,
+        "length_policy": length_policy_stats.as_dict(),
         "artifact_dir": str(out_dir),
     }
     (out_dir / "prepare_data_summary.json").write_text(

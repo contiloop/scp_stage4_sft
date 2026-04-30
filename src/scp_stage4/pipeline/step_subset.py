@@ -1491,6 +1491,90 @@ def _normalize_api_response_row(
     return response
 
 
+def _derive_error_type_from_api_row(row: Mapping[str, Any]) -> str:
+    status = str(row.get("status", "failed"))
+    if status == "ok":
+        return "none"
+    if status in {"skipped", "filtered", "needs_review"}:
+        return status
+    reason = str(row.get("reason", "") or "").lower()
+    error = str(row.get("error", "") or "").lower()
+    if "timeout" in reason or "timeout" in error:
+        return "timeout"
+    if error.strip():
+        return "runtime_error"
+    return "failed"
+
+
+def _build_preference_pairs(
+    *,
+    api_rows: Sequence[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    pairs: list[dict[str, Any]] = []
+    for row in api_rows:
+        pairs.append(
+            {
+                "id": row["id"],
+                "row_id": row["row_id"],
+                "request_id": row["request_id"],
+                "run_id": row["run_id"],
+                "subset_idx": row["subset_idx"],
+                "dataset": row["dataset"],
+                "source": row["source"],
+                "metadata": row["metadata"],
+                "student": row["student"],
+                "gold": row.get("gold"),
+                "status": row["status"],
+                "error_type": _derive_error_type_from_api_row(row),
+                "teacher_label": row["teacher_label"],
+                "reason": row.get("reason"),
+                "error": row.get("error"),
+                "provider": row.get("provider"),
+                "model": row.get("model"),
+                "prompt_version": row.get("prompt_version"),
+                "prompt_hash": row.get("prompt_hash"),
+                "usage": row.get("usage"),
+                "cost": row.get("cost"),
+                "latency_ms": row.get("latency_ms"),
+                "attempt": row.get("attempt"),
+                "config_hash": row.get("config_hash"),
+            }
+        )
+    return pairs
+
+
+def _upsert_run_level_preference_pairs(
+    *,
+    ctx: PipelineContext,
+    subset_pairs: Sequence[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    run_path = ctx.run_root / "preference_pairs.jsonl"
+    existing_rows: list[dict[str, Any]] = []
+    if run_path.exists():
+        existing_rows = _as_rows(read_jsonl(run_path))
+        existing_rows = validate_artifact_rows(existing_rows, "preference_pairs")
+
+    subset_indices = {int(row["subset_idx"]) for row in subset_pairs}
+    carried = [
+        dict(row) for row in existing_rows if int(row["subset_idx"]) not in subset_indices
+    ]
+    merged = carried + [dict(row) for row in subset_pairs]
+
+    dedup_by_request_id: dict[str, dict[str, Any]] = {}
+    for row in merged:
+        dedup_by_request_id[str(row["request_id"])] = row
+    merged_rows = list(dedup_by_request_id.values())
+    merged_rows.sort(
+        key=lambda row: (
+            int(row["subset_idx"]),
+            str(row["id"]),
+            str(row["request_id"]),
+        )
+    )
+    write_jsonl(run_path, validate_artifact_rows(merged_rows, "preference_pairs"), ensure_ascii=False)
+    return validate_artifact_rows(_as_rows(read_jsonl(run_path)), "preference_pairs")
+
+
 def _build_api_requests(
     *,
     ctx: PipelineContext,
@@ -1642,6 +1726,16 @@ def run_call_api(
         raise StepSubsetError(f"Unsupported external_api runtime mode: {mode}")
 
     responses = _write_artifact(ctx.subset_root / "api.jsonl", responses, "api")
+    preference_pairs = _build_preference_pairs(api_rows=responses)
+    preference_pairs = _write_artifact(
+        ctx.subset_root / "preference_pairs.jsonl",
+        preference_pairs,
+        "preference_pairs",
+    )
+    run_level_preference_pairs = _upsert_run_level_preference_pairs(
+        ctx=ctx,
+        subset_pairs=preference_pairs,
+    )
 
     validate_row_id_preservation(
         selected_rows,
@@ -1656,6 +1750,13 @@ def run_call_api(
         allow_subset=True,
         base_name="api_requests",
         candidate_name="api",
+    )
+    validate_row_id_preservation(
+        responses,
+        preference_pairs,
+        allow_subset=True,
+        base_name="api",
+        candidate_name="preference_pairs",
     )
 
     ctx.logger.log_event(
@@ -1680,6 +1781,8 @@ def run_call_api(
         "run_root": str(ctx.run_root),
         "api_requests": len(requests),
         "api_rows": len(responses),
+        "preference_pairs": len(preference_pairs),
+        "preference_pairs_run_total": len(run_level_preference_pairs),
     }
 
 
@@ -1870,6 +1973,7 @@ def run_subset(
         "subset_idx": ctx.subset_idx,
         "config_hash": ctx.cfg_hash,
         "run_root": str(ctx.run_root),
+        "preference_pairs_run_total": api["preference_pairs_run_total"],
         "counts": {
             "input": infer_q1["input_rows"],
             "q1": infer_q1["q1_rows"],
@@ -1880,6 +1984,7 @@ def run_subset(
             "clean_base": 1 if clean_base["clean_base"] else 0,
             "api_requests": api["api_requests"],
             "api": api["api_rows"],
+            "preference_pairs": api["preference_pairs"],
             "train": train["train_rows"],
         },
     }

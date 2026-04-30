@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import sys
@@ -49,6 +50,8 @@ def test_prepare_data_writes_expected_artifacts(tmp_path: Path) -> None:
         ]
         for path in expected:
             assert path.exists(), f"missing artifact: {path}"
+        if importlib.util.find_spec("pyarrow") is not None:
+            assert (out_dir / "datapool.normalized.parquet").exists()
 
         normalized_rows = read_jsonl(out_dir / "datapool.normalized.jsonl")
         train_rows = read_jsonl(out_dir / "datapool.train.jsonl")
@@ -130,6 +133,53 @@ def test_prepare_data_local_jsonl_runtime_uses_configured_source(tmp_path: Path)
         assert rows
         assert rows[0]["id"].startswith("local-row-1")
         assert rows[0]["dataset"] == "local_jsonl_dataset"
+    finally:
+        os.chdir(old_cwd)
+
+
+def test_prepare_data_can_force_jsonl_intermediate_format(tmp_path: Path) -> None:
+    workdir = tmp_path / "work_jsonl_intermediate"
+    workdir.mkdir(parents=True, exist_ok=True)
+
+    old_cwd = Path.cwd()
+    try:
+        os.chdir(workdir)
+        run_prepare_data(
+            config_path=str(ROOT / "configs" / "scp_stage4.yaml"),
+            overrides=[
+                "data.runtime.prepare_data.intermediate_format=jsonl",
+                "data.split.eval_ratio=0",
+                "data.subset_size=8",
+            ],
+        )
+        out_dir = workdir / "artifacts" / "data"
+        assert (out_dir / "datapool.normalized.jsonl").exists()
+        assert not (out_dir / ".prepare_data.normalized.tmp.jsonl").exists()
+    finally:
+        os.chdir(old_cwd)
+
+
+def test_prepare_data_emits_progress_logs(tmp_path: Path, capsys) -> None:
+    workdir = tmp_path / "work_progress"
+    workdir.mkdir(parents=True, exist_ok=True)
+
+    old_cwd = Path.cwd()
+    try:
+        os.chdir(workdir)
+        run_prepare_data(
+            config_path=str(ROOT / "configs" / "scp_stage4.yaml"),
+            overrides=[
+                "data.split.eval_ratio=0",
+                "data.subset_size=2",
+                "data.runtime.prepare_data.progress_enabled=true",
+                "data.runtime.prepare_data.progress_every_rows=1",
+                "data.runtime.prepare_data.progress_every_seconds=0.001",
+            ],
+        )
+        captured = capsys.readouterr()
+        assert "phase=normalize" in captured.err
+        assert "phase=split" in captured.err
+        assert "rows_per_sec=" in captured.err
     finally:
         os.chdir(old_cwd)
 

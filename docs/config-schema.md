@@ -191,7 +191,7 @@ data:
   length:
     enabled: true
     mode: tokenizer
-    tokenizer_batch_size: 512
+    tokenizer_batch_size: 2048
     max_total_tokens: 8192
     max_source_tokens: 4000
     max_output_tokens: 4096
@@ -200,6 +200,14 @@ data:
     safety_margin_tokens: 64
     overflow: split
     output_budget_strategy: dynamic
+
+  runtime:
+    prepare_data:
+      intermediate_format: parquet
+      parquet_row_group_size: 4096
+      progress_enabled: true
+      progress_every_rows: 100000
+      progress_every_seconds: 10.0
 ```
 
 `min_available_output_tokens` is not a minimum generation length.
@@ -237,6 +245,11 @@ The validator must check:
 - `data.length.min_available_output_tokens > 0`
 - `data.length.safety_margin_tokens >= 0`
 - `data.length.tokenizer_batch_size > 0`
+- `data.runtime.prepare_data.intermediate_format` must be `parquet` or `jsonl`
+- `data.runtime.prepare_data.parquet_row_group_size > 0`
+- `data.runtime.prepare_data.progress_enabled` must be boolean
+- `data.runtime.prepare_data.progress_every_rows > 0`
+- `data.runtime.prepare_data.progress_every_seconds > 0`
 - `data.length.max_source_tokens + data.length.min_available_output_tokens + data.length.prompt_template_tokens + data.length.safety_margin_tokens <= data.length.max_total_tokens`
 
 Runtime budget calculation:

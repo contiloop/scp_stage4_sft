@@ -35,6 +35,7 @@ _INFERENCE_RUNTIME_MODES = {"mock", "subprocess"}
 _QE_RUNTIME_MODES = {"mock", "subprocess"}
 _API_RUNTIME_MODES = {"mock", "subprocess"}
 _TRAINING_RUNTIME_MODES = {"mock", "subprocess"}
+_PREPARE_DATA_INTERMEDIATE_FORMATS = {"parquet", "jsonl"}
 
 
 def _err(errors: list[str], message: str) -> None:
@@ -204,6 +205,52 @@ def validate_config(cfg: dict[str, Any]) -> None:
                 "data.runtime.local_jsonl_path must be a non-empty string when mode=local_jsonl",
             )
     hf_runtime = _as_dict(data_runtime.get("hf", {}), "data.runtime.hf", errors)
+    prepare_data_runtime = _as_dict(
+        data_runtime.get("prepare_data", {}), "data.runtime.prepare_data", errors
+    )
+    intermediate_format = prepare_data_runtime.get("intermediate_format", "parquet")
+    if (
+        not isinstance(intermediate_format, str)
+        or intermediate_format not in _PREPARE_DATA_INTERMEDIATE_FORMATS
+    ):
+        _err(
+            errors,
+            "data.runtime.prepare_data.intermediate_format must be one of: "
+            + ", ".join(sorted(_PREPARE_DATA_INTERMEDIATE_FORMATS)),
+        )
+    parquet_row_group_size = prepare_data_runtime.get("parquet_row_group_size", 4096)
+    if (
+        isinstance(parquet_row_group_size, bool)
+        or not isinstance(parquet_row_group_size, int)
+        or parquet_row_group_size <= 0
+    ):
+        _err(
+            errors,
+            "data.runtime.prepare_data.parquet_row_group_size must be a positive integer",
+        )
+    progress_enabled = prepare_data_runtime.get("progress_enabled", True)
+    if not isinstance(progress_enabled, bool):
+        _err(errors, "data.runtime.prepare_data.progress_enabled must be a boolean")
+    progress_every_rows = prepare_data_runtime.get("progress_every_rows", 100000)
+    if (
+        isinstance(progress_every_rows, bool)
+        or not isinstance(progress_every_rows, int)
+        or progress_every_rows <= 0
+    ):
+        _err(
+            errors,
+            "data.runtime.prepare_data.progress_every_rows must be a positive integer",
+        )
+    progress_every_seconds = prepare_data_runtime.get("progress_every_seconds", 10.0)
+    if (
+        isinstance(progress_every_seconds, bool)
+        or not isinstance(progress_every_seconds, (int, float))
+        or float(progress_every_seconds) <= 0
+    ):
+        _err(
+            errors,
+            "data.runtime.prepare_data.progress_every_seconds must be a positive number",
+        )
     dataset_download_workers = hf_runtime.get("dataset_download_workers")
     if dataset_download_workers is not None:
         if (

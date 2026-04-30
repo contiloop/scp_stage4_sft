@@ -126,6 +126,41 @@ class ConfigValidationTests(unittest.TestCase):
         cfg["data"]["length"]["tokenizer_batch_size"] = 256
         validate_config(cfg)
 
+    def test_prepare_data_intermediate_format_must_be_supported(self) -> None:
+        cfg = compose_config("configs/scp_stage4.yaml")
+        cfg["data"]["runtime"]["prepare_data"]["intermediate_format"] = "csv"
+        with self.assertRaises(ConfigValidationError):
+            validate_config(cfg)
+        cfg["data"]["runtime"]["prepare_data"]["intermediate_format"] = "parquet"
+        validate_config(cfg)
+
+    def test_prepare_data_parquet_row_group_size_must_be_positive_integer(self) -> None:
+        cfg = compose_config("configs/scp_stage4.yaml")
+        cfg["data"]["runtime"]["prepare_data"]["parquet_row_group_size"] = 0
+        with self.assertRaises(ConfigValidationError):
+            validate_config(cfg)
+        cfg["data"]["runtime"]["prepare_data"]["parquet_row_group_size"] = 2048
+        validate_config(cfg)
+
+    def test_prepare_data_progress_config_contract(self) -> None:
+        cfg = compose_config("configs/scp_stage4.yaml")
+        cfg["data"]["runtime"]["prepare_data"]["progress_enabled"] = "yes"
+        with self.assertRaises(ConfigValidationError):
+            validate_config(cfg)
+        cfg = compose_config("configs/scp_stage4.yaml")
+        cfg["data"]["runtime"]["prepare_data"]["progress_every_rows"] = 0
+        with self.assertRaises(ConfigValidationError):
+            validate_config(cfg)
+        cfg = compose_config("configs/scp_stage4.yaml")
+        cfg["data"]["runtime"]["prepare_data"]["progress_every_seconds"] = 0
+        with self.assertRaises(ConfigValidationError):
+            validate_config(cfg)
+        cfg = compose_config("configs/scp_stage4.yaml")
+        cfg["data"]["runtime"]["prepare_data"]["progress_enabled"] = False
+        cfg["data"]["runtime"]["prepare_data"]["progress_every_rows"] = 50000
+        cfg["data"]["runtime"]["prepare_data"]["progress_every_seconds"] = 5.0
+        validate_config(cfg)
+
 
 if __name__ == "__main__":
     unittest.main()

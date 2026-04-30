@@ -3,6 +3,13 @@
     "runtime": {
       "mode": "fixture",
       "local_jsonl_path": null,
+      "prepare_data": {
+        "intermediate_format": "parquet",
+        "parquet_row_group_size": 4096,
+        "progress_enabled": true,
+        "progress_every_rows": 100000,
+        "progress_every_seconds": 10.0
+      },
       "hf": {
         "streaming": false,
         "max_rows_per_dataset": null,
@@ -44,7 +51,7 @@
       "tokenizer_name": null,
       "tokenizer_fallback": "whitespace",
       "tokenizer_local_files_only": false,
-      "tokenizer_batch_size": 512,
+      "tokenizer_batch_size": 2048,
       "split": {
         "unit": "sentence",
         "max_source_tokens_per_chunk": 4000,

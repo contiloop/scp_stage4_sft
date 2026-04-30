@@ -562,11 +562,17 @@ Default:
 ```yaml
 data:
   runtime:
+    prepare_data:
+      intermediate_format: parquet
+      parquet_row_group_size: 4096
+      progress_enabled: true
+      progress_every_rows: 100000
+      progress_every_seconds: 10.0
     hf:
       dataset_download_workers: 2
   num_workers: 4
   length:
-    tokenizer_batch_size: 512
+    tokenizer_batch_size: 2048
 ```
 
 Rules:
@@ -576,6 +582,10 @@ Rules:
 - `runtime.hf.dataset_download_workers` controls parallelism across datasets.
 - `num_workers` controls Hugging Face `load_dataset(..., num_proc=...)` when `streaming=false`.
 - `length.tokenizer_batch_size` controls batch length counting when `length.mode=tokenizer`.
+- `runtime.prepare_data.intermediate_format=parquet` stores normalized intermediates as Parquet before final JSONL emission.
+- `runtime.prepare_data.parquet_row_group_size` controls Parquet row-group flush size.
+- `runtime.prepare_data.progress_*` controls periodic rows/s progress logs printed during normalize/split phases.
+- When `pyarrow` is unavailable, `prepare-data` automatically falls back to JSONL intermediate mode.
 - Use multiprocessing for dataset loading/downloading; normalization and split writing must remain deterministic.
 - Output must remain deterministic.
 - Random operations must use configured seed.
@@ -592,15 +602,17 @@ Execution shape:
 raw row iterator
   → normalized row iterator
   → length policy iterator (batched tokenizer length counting)
-  → write datapool.normalized.jsonl (streaming)
-  → deterministic train/eval split from normalized artifact (second pass)
+  → write datapool.normalized.parquet (streaming intermediate)
+  → deterministic train/eval split from intermediate artifact (second pass)
+  → write datapool.normalized.jsonl
   → write train/eval/sample artifacts
 ```
 
 Details:
 
 - `raw_rows -> normalized -> filtered` list materialization is removed.
-- Rows are validated and written to `datapool.normalized.jsonl` as they stream.
+- Rows are validated and written to `datapool.normalized.parquet` as they stream.
+- Final JSONL artifacts are emitted from the intermediate stream in the split pass.
 - `tokenizer.encode` per-row loops are replaced with batch length counting (`tokenizer_batch_size`).
 - Train/eval split count remains deterministic (`ceil(total * eval_ratio)` with seed).
 - Sampling (`first_n` or `random`) is applied while building train/eval outputs, without loading full train rows into memory.
@@ -713,6 +725,7 @@ Recommended artifact layout:
 ```txt
 artifacts/
   data/
+    datapool.normalized.parquet
     datapool.normalized.jsonl
     datapool.train.jsonl
     datapool.eval.jsonl
@@ -724,6 +737,7 @@ Meanings:
 
 | File | Purpose |
 |---|---|
+| `datapool.normalized.parquet` | normalized intermediate store used by split pass |
 | `datapool.normalized.jsonl` | full normalized datapool |
 | `datapool.train.jsonl` | train split for SCP loop |
 | `datapool.eval.jsonl` | in-distribution eval split |
@@ -818,7 +832,7 @@ data:
   length:
     enabled: true
     mode: tokenizer
-    tokenizer_batch_size: 512
+    tokenizer_batch_size: 2048
     max_total_tokens: 8192
     max_source_tokens: 4000
     max_output_tokens: 4096
@@ -853,6 +867,14 @@ data:
     path: data/test.csv
     source_column: Source_En
     target_column: Target_Ko
+
+  runtime:
+    prepare_data:
+      intermediate_format: parquet
+      parquet_row_group_size: 4096
+      progress_enabled: true
+      progress_every_rows: 100000
+      progress_every_seconds: 10.0
 
   subset_size: 32
   seed: 42

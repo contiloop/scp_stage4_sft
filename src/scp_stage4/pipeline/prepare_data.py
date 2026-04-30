@@ -12,6 +12,8 @@ import random
 import re
 import shutil
 import struct
+import sys
+import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping
@@ -20,6 +22,13 @@ from scp_stage4.config.loader import compose_config
 from scp_stage4.config.validator import validate_config
 from scp_stage4.data import read_jsonl, write_jsonl
 from scp_stage4.schema import validate_artifact_row, validate_artifact_rows
+
+try:
+    import pyarrow as pa  # type: ignore
+    import pyarrow.parquet as pq  # type: ignore
+except Exception:
+    pa = None  # type: ignore[assignment]
+    pq = None  # type: ignore[assignment]
 
 
 class PrepareDataError(RuntimeError):
@@ -53,6 +62,155 @@ class _JsonlStreamWriter:
 
     def __exit__(self, exc_type: object, exc: object, exc_tb: object) -> None:
         self.close()
+
+
+class _ProgressReporter:
+    def __init__(
+        self,
+        *,
+        phase: str,
+        enabled: bool,
+        every_rows: int,
+        every_seconds: float,
+    ) -> None:
+        self.phase = phase
+        self.enabled = enabled
+        self.every_rows = max(1, int(every_rows))
+        self.every_seconds = max(0.1, float(every_seconds))
+        self._start = time.perf_counter()
+        self._last_report_time = self._start
+        self._last_report_rows = 0
+
+    def maybe_report(self, rows: int) -> None:
+        if not self.enabled:
+            return
+        now = time.perf_counter()
+        row_delta = rows - self._last_report_rows
+        time_delta = now - self._last_report_time
+        if row_delta < self.every_rows and time_delta < self.every_seconds:
+            return
+        self._emit(rows=rows, now=now)
+
+    def finish(self, rows: int) -> None:
+        if not self.enabled:
+            return
+        now = time.perf_counter()
+        if rows != self._last_report_rows:
+            self._emit(rows=rows, now=now, done=True)
+        else:
+            total_elapsed = max(now - self._start, 1e-9)
+            total_rps = rows / total_elapsed
+            print(
+                (
+                    f"[prepare-data] phase={self.phase} rows={rows} "
+                    f"rows_per_sec=0.0 avg_rows_per_sec={total_rps:.1f} "
+                    f"elapsed_sec={total_elapsed:.1f} done=true"
+                ),
+                file=sys.stderr,
+                flush=True,
+            )
+
+    def _emit(self, *, rows: int, now: float, done: bool = False) -> None:
+        row_delta = max(rows - self._last_report_rows, 0)
+        time_delta = max(now - self._last_report_time, 1e-9)
+        total_elapsed = max(now - self._start, 1e-9)
+        window_rps = row_delta / time_delta
+        total_rps = rows / total_elapsed
+        done_text = "true" if done else "false"
+        print(
+            (
+                f"[prepare-data] phase={self.phase} rows={rows} "
+                f"rows_per_sec={window_rps:.1f} avg_rows_per_sec={total_rps:.1f} "
+                f"elapsed_sec={total_elapsed:.1f} done={done_text}"
+            ),
+            file=sys.stderr,
+            flush=True,
+        )
+        self._last_report_time = now
+        self._last_report_rows = rows
+
+
+def _normalized_parquet_schema() -> Any:
+    if pa is None:
+        return None
+    return pa.schema(
+        [
+            pa.field("id", pa.string()),
+            pa.field("dataset", pa.string()),
+            pa.field("source", pa.string()),
+            pa.field(
+                "metadata",
+                pa.struct(
+                    [
+                        pa.field("title", pa.string()),
+                        pa.field("document_type", pa.string()),
+                        pa.field("text_role", pa.string()),
+                        pa.field("original_id", pa.string()),
+                        pa.field("parent_id", pa.string()),
+                        pa.field("chunk_idx", pa.int64()),
+                    ]
+                ),
+            ),
+        ]
+    )
+
+
+class _ParquetStreamWriter:
+    def __init__(self, path: Path, *, row_group_size: int = 4096) -> None:
+        if pa is None or pq is None:
+            raise PrepareDataError(
+                "Parquet intermediate format requires 'pyarrow' to be installed"
+            )
+        self.path = path
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._row_group_size = max(1, int(row_group_size))
+        self._pending: list[dict[str, Any]] = []
+        self._schema = _normalized_parquet_schema()
+        self._writer: Any | None = None
+        self.count = 0
+
+    def _flush_pending(self) -> None:
+        if not self._pending:
+            return
+        table = pa.Table.from_pylist(self._pending, schema=self._schema)
+        if self._writer is None:
+            self._writer = pq.ParquetWriter(str(self.path), table.schema, compression="zstd")
+        self._writer.write_table(table)
+        self._pending.clear()
+
+    def write(self, row: Mapping[str, Any]) -> None:
+        self._pending.append(dict(row))
+        self.count += 1
+        if len(self._pending) >= self._row_group_size:
+            self._flush_pending()
+
+    def close(self) -> None:
+        self._flush_pending()
+        if self._writer is None:
+            empty_table = pa.Table.from_pylist([], schema=self._schema)
+            self._writer = pq.ParquetWriter(
+                str(self.path),
+                empty_table.schema,
+                compression="zstd",
+            )
+        self._writer.close()
+
+    def __enter__(self) -> "_ParquetStreamWriter":
+        return self
+
+    def __exit__(self, exc_type: object, exc: object, exc_tb: object) -> None:
+        self.close()
+
+
+def _iter_parquet_mapping_rows(path: Path, *, batch_size: int = 4096) -> Iterable[dict[str, Any]]:
+    if pa is None or pq is None:
+        raise PrepareDataError("Parquet reading requires 'pyarrow' to be installed")
+    parquet_file = pq.ParquetFile(str(path))
+    for record_batch in parquet_file.iter_batches(batch_size=max(1, int(batch_size))):
+        table = pa.Table.from_batches([record_batch])
+        for row in table.to_pylist():
+            if isinstance(row, Mapping):
+                yield dict(row)
 
 
 class _TokenCounter:
@@ -907,7 +1065,8 @@ def _select_eval_indices_from_draws(
 
 def _build_split_artifacts(
     *,
-    normalized_path: Path,
+    normalized_rows_iter: Iterable[dict[str, Any]],
+    normalized_output_path: Path,
     train_path: Path,
     eval_path: Path,
     sampled_path: Path,
@@ -915,6 +1074,7 @@ def _build_split_artifacts(
     subset_size: int | None,
     sampling_strategy: str,
     sampling_seed: int,
+    on_processed_row: Callable[[int], None] | None = None,
 ) -> tuple[int, int, int]:
     train_rows = 0
     eval_rows = 0
@@ -929,9 +1089,16 @@ def _build_split_artifacts(
     rng = random.Random(sampling_seed)
 
     try:
-        with _JsonlStreamWriter(train_path) as train_writer, _JsonlStreamWriter(eval_path) as eval_writer:
-            for row_index, row in enumerate(_iter_jsonl_mapping_rows(normalized_path)):
+        with (
+            _JsonlStreamWriter(normalized_output_path) as normalized_writer,
+            _JsonlStreamWriter(train_path) as train_writer,
+            _JsonlStreamWriter(eval_path) as eval_writer,
+        ):
+            for row_index, row in enumerate(normalized_rows_iter):
                 validated = validate_artifact_row(row, "normalized")
+                normalized_writer.write(validated)
+                if on_processed_row is not None:
+                    on_processed_row(row_index + 1)
                 if row_index in eval_indices:
                     eval_writer.write(validated)
                     eval_rows += 1
@@ -973,6 +1140,66 @@ def _build_split_artifacts(
         sampled_rows = len(sorted_sampled_rows)
 
     return train_rows, eval_rows, sampled_rows
+
+
+def _prepare_data_runtime_cfg(data_cfg: Mapping[str, Any]) -> Mapping[str, Any]:
+    runtime_cfg = data_cfg.get("runtime", {})
+    if not isinstance(runtime_cfg, Mapping):
+        runtime_cfg = {}
+    prepare_cfg = runtime_cfg.get("prepare_data", {})
+    if not isinstance(prepare_cfg, Mapping):
+        prepare_cfg = {}
+    return prepare_cfg
+
+
+def _resolve_intermediate_format(data_cfg: Mapping[str, Any]) -> tuple[str, int]:
+    prepare_cfg = _prepare_data_runtime_cfg(data_cfg)
+
+    requested = str(prepare_cfg.get("intermediate_format", "parquet")).strip().lower()
+    if requested not in {"parquet", "jsonl"}:
+        requested = "parquet"
+
+    raw_row_group_size = prepare_cfg.get("parquet_row_group_size", 4096)
+    if isinstance(raw_row_group_size, bool) or not isinstance(raw_row_group_size, int):
+        row_group_size = 4096
+    else:
+        row_group_size = max(1, raw_row_group_size)
+
+    if requested == "parquet" and (pa is None or pq is None):
+        return "jsonl", row_group_size
+    return requested, row_group_size
+
+
+def _resolve_progress_config(data_cfg: Mapping[str, Any]) -> tuple[bool, int, float]:
+    prepare_cfg = _prepare_data_runtime_cfg(data_cfg)
+    progress_enabled_raw = prepare_cfg.get("progress_enabled", True)
+    progress_enabled = bool(progress_enabled_raw)
+
+    raw_every_rows = prepare_cfg.get("progress_every_rows", 100_000)
+    if isinstance(raw_every_rows, bool) or not isinstance(raw_every_rows, int):
+        every_rows = 100_000
+    else:
+        every_rows = max(1, raw_every_rows)
+
+    raw_every_seconds = prepare_cfg.get("progress_every_seconds", 10.0)
+    if isinstance(raw_every_seconds, bool) or not isinstance(raw_every_seconds, (int, float)):
+        every_seconds = 10.0
+    else:
+        every_seconds = max(0.1, float(raw_every_seconds))
+
+    return progress_enabled, every_rows, every_seconds
+
+
+def _iter_intermediate_rows(
+    *,
+    fmt: str,
+    path: Path,
+    parquet_batch_size: int,
+) -> Iterable[dict[str, Any]]:
+    if fmt == "parquet":
+        yield from _iter_parquet_mapping_rows(path, batch_size=parquet_batch_size)
+        return
+    yield from _iter_jsonl_mapping_rows(path)
 
 
 def _write_ood_placeholder(data_cfg: Mapping[str, Any], out_path: Path) -> None:
@@ -1033,26 +1260,58 @@ def run_prepare_data(
     out_dir = Path("artifacts/data")
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    normalized_path = out_dir / "datapool.normalized.jsonl"
+    normalized_jsonl_path = out_dir / "datapool.normalized.jsonl"
+    normalized_parquet_path = out_dir / "datapool.normalized.parquet"
     train_path = out_dir / "datapool.train.jsonl"
     eval_path = out_dir / "datapool.eval.jsonl"
     sampled_path = out_dir / "datapool.train.sampled.jsonl"
     split_draws_path = out_dir / ".prepare_data.eval_draws.bin"
+    intermediate_jsonl_path = out_dir / ".prepare_data.normalized.tmp.jsonl"
+
+    intermediate_format, parquet_row_group_size = _resolve_intermediate_format(data_cfg)
+    progress_enabled, progress_every_rows, progress_every_seconds = _resolve_progress_config(
+        data_cfg
+    )
+    normalize_progress = _ProgressReporter(
+        phase="normalize",
+        enabled=progress_enabled,
+        every_rows=progress_every_rows,
+        every_seconds=progress_every_seconds,
+    )
+    split_progress = _ProgressReporter(
+        phase="split",
+        enabled=progress_enabled,
+        every_rows=progress_every_rows,
+        every_seconds=progress_every_seconds,
+    )
+    if intermediate_format == "parquet":
+        intermediate_path = normalized_parquet_path
+    else:
+        intermediate_path = intermediate_jsonl_path
 
     rng = random.Random(split_seed)
     normalized_rows = 0
     try:
-        with _JsonlStreamWriter(normalized_path) as normalized_writer, split_draws_path.open(
-            "wb"
-        ) as split_draws_writer:
+        writer: _ParquetStreamWriter | _JsonlStreamWriter
+        if intermediate_format == "parquet":
+            writer = _ParquetStreamWriter(
+                intermediate_path,
+                row_group_size=parquet_row_group_size,
+            )
+        else:
+            writer = _JsonlStreamWriter(intermediate_path)
+
+        with writer as intermediate_writer, split_draws_path.open("wb") as split_draws_writer:
             stream = _iter_raw_rows(data_cfg)
             stream = _iter_normalized_rows(stream, data_cfg)
             stream = _iter_rows_with_length_policy(stream, cfg)
             for row in stream:
                 validated = validate_artifact_row(row, "normalized")
-                normalized_writer.write(validated)
+                intermediate_writer.write(validated)
                 split_draws_writer.write(struct.pack("<d", rng.random()))
                 normalized_rows += 1
+                normalize_progress.maybe_report(normalized_rows)
+        normalize_progress.finish(normalized_rows)
 
         eval_count = _target_eval_count(normalized_rows, eval_ratio)
         eval_indices = _select_eval_indices_from_draws(
@@ -1061,7 +1320,12 @@ def run_prepare_data(
             eval_count=eval_count,
         )
         train_rows, eval_rows, sampled_rows = _build_split_artifacts(
-            normalized_path=normalized_path,
+            normalized_rows_iter=_iter_intermediate_rows(
+                fmt=intermediate_format,
+                path=intermediate_path,
+                parquet_batch_size=parquet_row_group_size,
+            ),
+            normalized_output_path=normalized_jsonl_path,
             train_path=train_path,
             eval_path=eval_path,
             sampled_path=sampled_path,
@@ -1069,10 +1333,14 @@ def run_prepare_data(
             subset_size=subset_limit,
             sampling_strategy=sampling_strategy,
             sampling_seed=sampling_seed,
+            on_processed_row=split_progress.maybe_report,
         )
+        split_progress.finish(normalized_rows)
     finally:
         if split_draws_path.exists():
             split_draws_path.unlink()
+        if intermediate_jsonl_path.exists():
+            intermediate_jsonl_path.unlink()
 
     _write_ood_placeholder(data_cfg, out_dir / "ood_test.jsonl")
 
@@ -1081,6 +1349,8 @@ def run_prepare_data(
         "train_rows": train_rows,
         "eval_rows": eval_rows,
         "sampled_rows": sampled_rows,
+        "intermediate_format": intermediate_format,
+        "progress_enabled": progress_enabled,
         "artifact_dir": str(out_dir),
     }
     (out_dir / "prepare_data_summary.json").write_text(

@@ -266,6 +266,13 @@ def validate_config(cfg: dict[str, Any]) -> None:
     tokenizer_fallback = length_cfg.get("tokenizer_fallback", "whitespace")
     if tokenizer_fallback not in {"whitespace", "error"}:
         _err(errors, "data.length.tokenizer_fallback must be 'whitespace' or 'error'")
+    tokenizer_batch_size = length_cfg.get("tokenizer_batch_size", 512)
+    if (
+        isinstance(tokenizer_batch_size, bool)
+        or not isinstance(tokenizer_batch_size, int)
+        or tokenizer_batch_size <= 0
+    ):
+        _err(errors, "data.length.tokenizer_batch_size must be a positive integer")
     split_cfg = _as_dict(length_cfg.get("split", {}), "data.length.split", errors)
     split_unit = split_cfg.get("unit", "sentence")
     if not isinstance(split_unit, str) or split_unit not in _SPLIT_UNIT_POLICIES:

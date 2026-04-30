@@ -31,14 +31,8 @@ By default, it installs into the instance Python (`USE_VENV=0`). To install into
 
 ```sh
 python -c "from huggingface_hub import login; login()"
-python -m wandb login
+wandb login
 export OPENAI_API_KEY="..."
-```
-
-If `wandb` is installed only in `.venv`, use:
-
-```sh
-.venv/bin/python -m wandb login
 ```
 
 If you use QE subprocess isolation, also set:

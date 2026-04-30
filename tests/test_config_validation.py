@@ -118,6 +118,14 @@ class ConfigValidationTests(unittest.TestCase):
         cfg["data"]["runtime"]["hf"]["dataset_download_workers"] = None
         validate_config(cfg)
 
+    def test_tokenizer_batch_size_must_be_positive_integer(self) -> None:
+        cfg = compose_config("configs/scp_stage4.yaml")
+        cfg["data"]["length"]["tokenizer_batch_size"] = 0
+        with self.assertRaises(ConfigValidationError):
+            validate_config(cfg)
+        cfg["data"]["length"]["tokenizer_batch_size"] = 256
+        validate_config(cfg)
+
 
 if __name__ == "__main__":
     unittest.main()

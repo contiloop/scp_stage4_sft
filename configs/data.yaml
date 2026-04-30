@@ -44,6 +44,7 @@
       "tokenizer_name": null,
       "tokenizer_fallback": "whitespace",
       "tokenizer_local_files_only": false,
+      "tokenizer_batch_size": 512,
       "split": {
         "unit": "sentence",
         "max_source_tokens_per_chunk": 4000,

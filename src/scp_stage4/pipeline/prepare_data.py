@@ -5,10 +5,13 @@ from __future__ import annotations
 import argparse
 import csv
 import gzip
+import heapq
 import json
 import math
 import random
 import re
+import shutil
+import struct
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping
@@ -16,11 +19,57 @@ from typing import Any, Callable, Iterable, Mapping
 from scp_stage4.config.loader import compose_config
 from scp_stage4.config.validator import validate_config
 from scp_stage4.data import read_jsonl, write_jsonl
-from scp_stage4.schema import validate_artifact_rows
+from scp_stage4.schema import validate_artifact_row, validate_artifact_rows
 
 
 class PrepareDataError(RuntimeError):
     """Raised when prepare-data contract cannot be satisfied."""
+
+
+class _JsonlStreamWriter:
+    def __init__(self, path: Path) -> None:
+        self.path = path
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._handle = self.path.open("w", encoding="utf-8", newline="\n")
+        self.count = 0
+
+    def write(self, row: Mapping[str, Any]) -> None:
+        self._handle.write(
+            json.dumps(
+                dict(row),
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+        )
+        self._handle.write("\n")
+        self.count += 1
+
+    def close(self) -> None:
+        self._handle.close()
+
+    def __enter__(self) -> "_JsonlStreamWriter":
+        return self
+
+    def __exit__(self, exc_type: object, exc: object, exc_tb: object) -> None:
+        self.close()
+
+
+class _TokenCounter:
+    def __init__(
+        self,
+        *,
+        count: Callable[[str], int],
+        count_batch: Callable[[list[str]], list[int]],
+    ) -> None:
+        self._count = count
+        self._count_batch = count_batch
+
+    def count(self, text: str) -> int:
+        return self._count(text)
+
+    def count_batch(self, texts: list[str]) -> list[int]:
+        return self._count_batch(texts)
 
 
 def _normalize_whitespace(text: str) -> str:
@@ -93,7 +142,7 @@ def _fixture_raw_rows(data_cfg: Mapping[str, Any]) -> list[dict[str, Any]]:
     return _fallback_raw_rows(dataset_name)
 
 
-def _load_local_jsonl_rows(data_cfg: Mapping[str, Any]) -> list[dict[str, Any]]:
+def _iter_local_jsonl_rows(data_cfg: Mapping[str, Any]) -> Iterable[dict[str, Any]]:
     runtime_cfg = data_cfg.get("runtime", {})
     if not isinstance(runtime_cfg, Mapping):
         raise PrepareDataError("data.runtime must be a mapping")
@@ -105,7 +154,7 @@ def _load_local_jsonl_rows(data_cfg: Mapping[str, Any]) -> list[dict[str, Any]]:
     path = Path(path_value)
     if not path.exists():
         raise PrepareDataError(f"local JSONL dataset not found: {path}")
-    return [dict(row) for row in read_jsonl(path)]
+    yield from _iter_jsonl_mapping_rows(path)
 
 
 def _iter_jsonl_mapping_rows(path: Path) -> Iterable[dict[str, Any]]:
@@ -183,7 +232,7 @@ def _load_hf_rows_via_snapshot_jsonl(
     split: str,
     spec: Mapping[str, Any],
     max_rows_per_dataset: int | None,
-) -> list[dict[str, Any]]:
+) -> Iterable[dict[str, Any]]:
     try:
         from huggingface_hub import snapshot_download  # type: ignore
     except ModuleNotFoundError as exc:
@@ -212,25 +261,25 @@ def _load_hf_rows_via_snapshot_jsonl(
             f"HF JSONL fallback found no JSONL files in snapshot: {snapshot_path}"
         )
 
-    rows: list[dict[str, Any]] = []
     row_index = 0
+    emitted = False
     for path in jsonl_paths:
         for raw_row in _iter_jsonl_mapping_rows(path):
             if max_rows_per_dataset is not None and row_index >= max_rows_per_dataset:
                 break
-            rows.append(_with_row_contract(raw_row, dataset_name, row_index))
+            emitted = True
+            yield _with_row_contract(raw_row, dataset_name, row_index)
             row_index += 1
         if max_rows_per_dataset is not None and row_index >= max_rows_per_dataset:
             break
 
-    if not rows:
+    if not emitted:
         raise PrepareDataError(
             f"HF JSONL fallback produced zero rows for dataset '{dataset_name}'"
         )
-    return rows
 
 
-def _load_hf_rows(data_cfg: Mapping[str, Any]) -> list[dict[str, Any]]:
+def _load_hf_rows(data_cfg: Mapping[str, Any]) -> Iterable[dict[str, Any]]:
     try:
         from datasets import load_dataset  # type: ignore
     except ModuleNotFoundError as exc:
@@ -266,7 +315,7 @@ def _load_hf_rows(data_cfg: Mapping[str, Any]) -> list[dict[str, Any]]:
     if not isinstance(dataset_specs, list) or not dataset_specs:
         raise PrepareDataError("data.datasets must be a non-empty list for HF loading")
 
-    def _load_one_dataset(dataset_index: int, spec: Mapping[str, Any]) -> list[dict[str, Any]]:
+    def _load_one_dataset(dataset_index: int, spec: Mapping[str, Any]) -> tuple[str, str, Any]:
         if not isinstance(spec, Mapping):
             raise PrepareDataError(f"data.datasets[{dataset_index}] must be a mapping")
         name = str(spec.get("name", "")).strip()
@@ -290,71 +339,102 @@ def _load_hf_rows(data_cfg: Mapping[str, Any]) -> list[dict[str, Any]]:
                 load_kwargs[optional_key] = spec[optional_key]
 
         config_name = spec.get("config_name")
-        rows_for_dataset: list[dict[str, Any]] = []
         try:
             if isinstance(config_name, str) and config_name.strip():
                 dataset = load_dataset(name, config_name, **load_kwargs)
             else:
                 dataset = load_dataset(name, **load_kwargs)
-
-            row_index = 0
-            for raw_row in dataset:
-                if max_rows_per_dataset is not None and row_index >= max_rows_per_dataset:
-                    break
-                if not isinstance(raw_row, Mapping):
-                    continue
-                rows_for_dataset.append(_with_row_contract(raw_row, name, row_index))
-                row_index += 1
+            return "dataset", name, dataset
         except Exception as exc:
             if not fallback_to_snapshot_jsonl:
                 raise PrepareDataError(
                     f"HF load_dataset failed for '{name}' and fallback is disabled: {exc}"
                 ) from exc
-            rows_for_dataset = _load_hf_rows_via_snapshot_jsonl(
-                dataset_name=name,
-                split=split,
-                spec=spec,
-                max_rows_per_dataset=max_rows_per_dataset,
+            return (
+                "iterable",
+                name,
+                _load_hf_rows_via_snapshot_jsonl(
+                    dataset_name=name,
+                    split=split,
+                    spec=spec,
+                    max_rows_per_dataset=max_rows_per_dataset,
+                ),
             )
-        return rows_for_dataset
 
-    loaded_rows: list[dict[str, Any]] = []
-    if dataset_download_workers <= 1 or len(dataset_specs) <= 1:
-        for dataset_index, spec in enumerate(dataset_specs):
-            loaded_rows.extend(_load_one_dataset(dataset_index, spec))
-    else:
-        max_parallel = min(dataset_download_workers, len(dataset_specs))
-        indexed_rows: dict[int, list[dict[str, Any]]] = {}
-        with ThreadPoolExecutor(max_workers=max_parallel) as executor:
-            future_to_index = {
-                executor.submit(_load_one_dataset, dataset_index, spec): dataset_index
-                for dataset_index, spec in enumerate(dataset_specs)
-            }
-            for future, dataset_index in future_to_index.items():
-                indexed_rows[dataset_index] = future.result()
-        for dataset_index in range(len(dataset_specs)):
-            loaded_rows.extend(indexed_rows.get(dataset_index, []))
+    def _iter_dataset_rows(
+        kind: str,
+        dataset_name: str,
+        payload: Any,
+    ) -> Iterable[dict[str, Any]]:
+        if kind == "iterable":
+            yield from payload
+            return
+        row_index = 0
+        for raw_row in payload:
+            if max_rows_per_dataset is not None and row_index >= max_rows_per_dataset:
+                break
+            if not isinstance(raw_row, Mapping):
+                continue
+            yield _with_row_contract(raw_row, dataset_name, row_index)
+            row_index += 1
 
-    if not loaded_rows:
-        raise PrepareDataError("HF loading produced zero rows")
-    return loaded_rows
+    def _iter_rows() -> Iterable[dict[str, Any]]:
+        emitted = False
+        if dataset_download_workers <= 1 or len(dataset_specs) <= 1:
+            for dataset_index, spec in enumerate(dataset_specs):
+                kind, dataset_name, payload = _load_one_dataset(dataset_index, spec)
+                for row in _iter_dataset_rows(kind, dataset_name, payload):
+                    emitted = True
+                    yield row
+        else:
+            max_parallel = min(dataset_download_workers, len(dataset_specs))
+            indexed_rows: dict[int, tuple[str, str, Any]] = {}
+            with ThreadPoolExecutor(max_workers=max_parallel) as executor:
+                future_to_index = {
+                    executor.submit(_load_one_dataset, dataset_index, spec): dataset_index
+                    for dataset_index, spec in enumerate(dataset_specs)
+                }
+                for future, dataset_index in future_to_index.items():
+                    indexed_rows[dataset_index] = future.result()
+            for dataset_index in range(len(dataset_specs)):
+                prepared = indexed_rows.get(dataset_index)
+                if prepared is None:
+                    continue
+                kind, dataset_name, payload = prepared
+                for row in _iter_dataset_rows(kind, dataset_name, payload):
+                    emitted = True
+                    yield row
+        if not emitted:
+            raise PrepareDataError("HF loading produced zero rows")
+
+    return _iter_rows()
 
 
-def _load_raw_rows(data_cfg: Mapping[str, Any]) -> list[dict[str, Any]]:
+def _iter_raw_rows(data_cfg: Mapping[str, Any]) -> Iterable[dict[str, Any]]:
     runtime_cfg = data_cfg.get("runtime", {})
     if not isinstance(runtime_cfg, Mapping):
         runtime_cfg = {}
     mode = str(runtime_cfg.get("mode", "fixture"))
     if mode == "fixture":
-        return _fixture_raw_rows(data_cfg)
+        yield from _fixture_raw_rows(data_cfg)
+        return
     if mode == "local_jsonl":
-        return _load_local_jsonl_rows(data_cfg)
+        yield from _iter_local_jsonl_rows(data_cfg)
+        return
     if mode == "hf":
-        return _load_hf_rows(data_cfg)
+        yield from _load_hf_rows(data_cfg)
+        return
     raise PrepareDataError(f"Unsupported data.runtime.mode: {mode}")
 
 
-def _normalize_rows(raw_rows: list[dict[str, Any]], data_cfg: Mapping[str, Any]) -> list[dict[str, Any]]:
+def _load_raw_rows(data_cfg: Mapping[str, Any]) -> list[dict[str, Any]]:
+    return list(_iter_raw_rows(data_cfg))
+
+
+def _iter_normalized_rows(
+    raw_rows: Iterable[dict[str, Any]],
+    data_cfg: Mapping[str, Any],
+) -> Iterable[dict[str, Any]]:
     dataset_default = "local_fixture_dataset"
     datasets = data_cfg.get("datasets")
     if isinstance(datasets, list) and datasets:
@@ -381,7 +461,6 @@ def _normalize_rows(raw_rows: list[dict[str, Any]], data_cfg: Mapping[str, Any])
     ]
 
     translatable_fields = data_cfg.get("translatable_fields")
-    normalized: list[dict[str, Any]] = []
 
     for index, row in enumerate(raw_rows):
         if not isinstance(row, Mapping):
@@ -408,21 +487,19 @@ def _normalize_rows(raw_rows: list[dict[str, Any]], data_cfg: Mapping[str, Any])
                         continue
                     continue
                 text_role = str(field.get("text_role", "other"))
-                normalized.append(
-                    {
-                        "id": f"{base_id}__{field_name}",
-                        "dataset": dataset_name,
-                        "source": value,
-                        "metadata": {
-                            "title": title,
-                            "document_type": document_type,
-                            "text_role": text_role,
-                            "original_id": base_id,
-                            "parent_id": None,
-                            "chunk_idx": None,
-                        },
-                    }
-                )
+                yield {
+                    "id": f"{base_id}__{field_name}",
+                    "dataset": dataset_name,
+                    "source": value,
+                    "metadata": {
+                        "title": title,
+                        "document_type": document_type,
+                        "text_role": text_role,
+                        "original_id": base_id,
+                        "parent_id": None,
+                        "chunk_idx": None,
+                    },
+                }
                 emitted = True
 
         if emitted:
@@ -430,30 +507,30 @@ def _normalize_rows(raw_rows: list[dict[str, Any]], data_cfg: Mapping[str, Any])
         if source is None:
             continue
 
-        normalized.append(
-            {
-                "id": base_id,
-                "dataset": dataset_name,
-                "source": source,
-                "metadata": {
-                    "title": title,
-                    "document_type": document_type,
-                    "text_role": "body",
-                    "original_id": base_id,
-                    "parent_id": None,
-                    "chunk_idx": None,
-                },
-            }
-        )
+        yield {
+            "id": base_id,
+            "dataset": dataset_name,
+            "source": source,
+            "metadata": {
+                "title": title,
+                "document_type": document_type,
+                "text_role": "body",
+                "original_id": base_id,
+                "parent_id": None,
+                "chunk_idx": None,
+            },
+        }
 
-    return validate_artifact_rows(normalized, "normalized")
+
+def _normalize_rows(raw_rows: list[dict[str, Any]], data_cfg: Mapping[str, Any]) -> list[dict[str, Any]]:
+    return validate_artifact_rows(_iter_normalized_rows(raw_rows, data_cfg), "normalized")
 
 
 def _estimate_tokens(text: str) -> int:
     return len(text.split())
 
 
-def _build_token_counter(cfg: Mapping[str, Any]) -> Callable[[str], int]:
+def _build_token_counter(cfg: Mapping[str, Any]) -> _TokenCounter:
     data_cfg = cfg.get("data", {})
     if not isinstance(data_cfg, Mapping):
         data_cfg = {}
@@ -463,7 +540,10 @@ def _build_token_counter(cfg: Mapping[str, Any]) -> Callable[[str], int]:
 
     mode = str(length_cfg.get("mode", "whitespace"))
     if mode != "tokenizer":
-        return _estimate_tokens
+        return _TokenCounter(
+            count=_estimate_tokens,
+            count_batch=lambda texts: [_estimate_tokens(text) for text in texts],
+        )
 
     model_cfg = cfg.get("model", {})
     if not isinstance(model_cfg, Mapping):
@@ -483,7 +563,10 @@ def _build_token_counter(cfg: Mapping[str, Any]) -> Callable[[str], int]:
         )
     except Exception as exc:
         if fallback == "whitespace":
-            return _estimate_tokens
+            return _TokenCounter(
+                count=_estimate_tokens,
+                count_batch=lambda texts: [_estimate_tokens(text) for text in texts],
+            )
         raise PrepareDataError(
             "tokenizer length mode requires a loadable Hugging Face tokenizer; "
             f"failed to load {tokenizer_name!r}"
@@ -492,7 +575,31 @@ def _build_token_counter(cfg: Mapping[str, Any]) -> Callable[[str], int]:
     def count_tokens(text: str) -> int:
         return len(tokenizer.encode(text, add_special_tokens=False))
 
-    return count_tokens
+    def count_tokens_batch(texts: list[str]) -> list[int]:
+        if not texts:
+            return []
+        try:
+            encoded = tokenizer(
+                texts,
+                add_special_tokens=False,
+                padding=False,
+                truncation=False,
+                return_attention_mask=False,
+                return_token_type_ids=False,
+                return_length=True,
+            )
+            lengths = encoded.get("length")
+            if isinstance(lengths, list):
+                return [int(value) for value in lengths]
+        except Exception:
+            # Fall back to per-row tokenization when fast length path is unavailable.
+            pass
+        return [count_tokens(text) for text in texts]
+
+    return _TokenCounter(
+        count=count_tokens,
+        count_batch=count_tokens_batch,
+    )
 
 
 _SENTENCE_RE = re.compile(r"[^.!?。！？\n]+[.!?。！？]?(?:\s+|$)|[^\n]+(?:\n|$)")
@@ -598,13 +705,17 @@ def _resolved_runtime_token_limits(cfg: Mapping[str, Any]) -> tuple[int, int]:
     return runtime_max_total, effective_max_source_tokens
 
 
-def _apply_length_policy(rows: list[dict[str, Any]], cfg: Mapping[str, Any]) -> list[dict[str, Any]]:
+def _iter_rows_with_length_policy(
+    rows: Iterable[dict[str, Any]],
+    cfg: Mapping[str, Any],
+) -> Iterable[dict[str, Any]]:
     data_cfg = cfg.get("data", {})
     if not isinstance(data_cfg, Mapping):
         data_cfg = {}
     length_cfg = data_cfg.get("length", {})
     if not isinstance(length_cfg, Mapping) or not bool(length_cfg.get("enabled", True)):
-        return rows
+        yield from rows
+        return
 
     runtime_max_total, effective_max_source_tokens = _resolved_runtime_token_limits(cfg)
     prompt_template_tokens = int(length_cfg.get("prompt_template_tokens", 0))
@@ -621,56 +732,84 @@ def _apply_length_policy(rows: list[dict[str, Any]], cfg: Mapping[str, Any]) -> 
     max_tokens_per_chunk = min(max_tokens_per_chunk, effective_max_source_tokens)
     fallback_for_long_sentence = str(split_cfg.get("fallback_for_long_sentence", "skip"))
     on_max_chunks_exceeded = str(split_cfg.get("on_max_chunks_exceeded", "skip"))
-    token_count = _build_token_counter(cfg)
+    raw_batch_size = length_cfg.get("tokenizer_batch_size", 512)
+    if isinstance(raw_batch_size, bool) or not isinstance(raw_batch_size, int):
+        batch_size = 512
+    else:
+        batch_size = max(1, raw_batch_size)
+    token_counter = _build_token_counter(cfg)
 
-    filtered: list[dict[str, Any]] = []
-    for row in rows:
-        source = str(row["source"])
-        source_tokens = token_count(source)
-        available_output_budget = (
-            runtime_max_total
-            - prompt_template_tokens
-            - source_tokens
-            - safety_margin_tokens
-        )
-        if (
-            source_tokens <= effective_max_source_tokens
-            and available_output_budget >= min_available_output_tokens
-        ):
-            filtered.append(row)
-            continue
+    pending_rows: list[dict[str, Any]] = []
+    pending_sources: list[str] = []
 
-        if overflow == "skip":
-            continue
+    def _flush_pending() -> Iterable[dict[str, Any]]:
+        if not pending_rows:
+            return ()
 
-        if overflow == "truncate":
-            words = source.split()
-            truncated = " ".join(words[:effective_max_source_tokens])
-            out = dict(row)
-            out["source"] = truncated
-            truncated_tokens = token_count(truncated)
-            available_after_truncation = (
+        source_token_counts = token_counter.count_batch(pending_sources)
+        if len(source_token_counts) != len(pending_rows):
+            raise PrepareDataError("tokenizer length counting returned mismatched batch length")
+
+        filtered_rows: list[dict[str, Any]] = []
+        for row, source_tokens in zip(pending_rows, source_token_counts):
+            source = str(row["source"])
+            available_output_budget = (
                 runtime_max_total
                 - prompt_template_tokens
-                - truncated_tokens
+                - source_tokens
                 - safety_margin_tokens
             )
-            if available_after_truncation >= min_available_output_tokens:
-                filtered.append(out)
-            continue
+            if (
+                source_tokens <= effective_max_source_tokens
+                and available_output_budget >= min_available_output_tokens
+            ):
+                filtered_rows.append(row)
+                continue
 
-        filtered.extend(
-            _split_long_source(
-                row,
-                token_count=token_count,
-                max_tokens_per_chunk=max_tokens_per_chunk,
-                max_chunks=max_chunks,
-                fallback_for_long_sentence=fallback_for_long_sentence,
-                on_max_chunks_exceeded=on_max_chunks_exceeded,
+            if overflow == "skip":
+                continue
+
+            if overflow == "truncate":
+                words = source.split()
+                truncated = " ".join(words[:effective_max_source_tokens])
+                out = dict(row)
+                out["source"] = truncated
+                truncated_tokens = token_counter.count(truncated)
+                available_after_truncation = (
+                    runtime_max_total
+                    - prompt_template_tokens
+                    - truncated_tokens
+                    - safety_margin_tokens
+                )
+                if available_after_truncation >= min_available_output_tokens:
+                    filtered_rows.append(out)
+                continue
+
+            filtered_rows.extend(
+                _split_long_source(
+                    row,
+                    token_count=token_counter.count,
+                    max_tokens_per_chunk=max_tokens_per_chunk,
+                    max_chunks=max_chunks,
+                    fallback_for_long_sentence=fallback_for_long_sentence,
+                    on_max_chunks_exceeded=on_max_chunks_exceeded,
+                )
             )
-        )
+        pending_rows.clear()
+        pending_sources.clear()
+        return filtered_rows
 
-    return validate_artifact_rows(filtered, "normalized")
+    for row in rows:
+        pending_rows.append(row)
+        pending_sources.append(str(row["source"]))
+        if len(pending_rows) >= batch_size:
+            yield from _flush_pending()
+
+    yield from _flush_pending()
+
+
+def _apply_length_policy(rows: list[dict[str, Any]], cfg: Mapping[str, Any]) -> list[dict[str, Any]]:
+    return validate_artifact_rows(_iter_rows_with_length_policy(rows, cfg), "normalized")
 
 
 def _split_train_eval(
@@ -722,6 +861,120 @@ def _sample_train_rows(
     return list(train_rows[:size])
 
 
+def _target_eval_count(total_rows: int, eval_ratio: float) -> int:
+    if total_rows <= 1 or eval_ratio <= 0:
+        return 0
+    eval_count = int(math.ceil(total_rows * eval_ratio))
+    return max(1, min(eval_count, total_rows - 1))
+
+
+def _select_eval_indices_from_draws(
+    draws_path: Path,
+    *,
+    total_rows: int,
+    eval_count: int,
+) -> set[int]:
+    if eval_count <= 0 or total_rows <= 1:
+        return set()
+
+    heap: list[tuple[float, int]] = []
+    bytes_per_draw = struct.calcsize("<d")
+    observed_rows = 0
+    with draws_path.open("rb") as handle:
+        while True:
+            chunk = handle.read(bytes_per_draw)
+            if not chunk:
+                break
+            if len(chunk) != bytes_per_draw:
+                raise PrepareDataError(
+                    f"corrupted eval draw file: {draws_path}"
+                )
+            draw = struct.unpack("<d", chunk)[0]
+            if len(heap) < eval_count:
+                heapq.heappush(heap, (-draw, observed_rows))
+            elif draw < -heap[0][0]:
+                heapq.heapreplace(heap, (-draw, observed_rows))
+            observed_rows += 1
+
+    if observed_rows != total_rows:
+        raise PrepareDataError(
+            "eval split draw count mismatch; expected "
+            f"{total_rows}, observed {observed_rows}"
+        )
+
+    return {row_index for _, row_index in heap}
+
+
+def _build_split_artifacts(
+    *,
+    normalized_path: Path,
+    train_path: Path,
+    eval_path: Path,
+    sampled_path: Path,
+    eval_indices: set[int],
+    subset_size: int | None,
+    sampling_strategy: str,
+    sampling_seed: int,
+) -> tuple[int, int, int]:
+    train_rows = 0
+    eval_rows = 0
+    sampled_rows = 0
+
+    subset_limit = int(subset_size) if subset_size is not None else None
+    first_n_writer: _JsonlStreamWriter | None = None
+    if subset_limit is not None and sampling_strategy != "random":
+        first_n_writer = _JsonlStreamWriter(sampled_path)
+
+    random_reservoir: list[tuple[int, dict[str, Any]]] = []
+    rng = random.Random(sampling_seed)
+
+    try:
+        with _JsonlStreamWriter(train_path) as train_writer, _JsonlStreamWriter(eval_path) as eval_writer:
+            for row_index, row in enumerate(_iter_jsonl_mapping_rows(normalized_path)):
+                validated = validate_artifact_row(row, "normalized")
+                if row_index in eval_indices:
+                    eval_writer.write(validated)
+                    eval_rows += 1
+                    continue
+
+                train_writer.write(validated)
+                train_row_index = train_rows
+                train_rows += 1
+
+                if subset_limit is None:
+                    continue
+
+                if sampling_strategy == "random":
+                    if len(random_reservoir) < subset_limit:
+                        random_reservoir.append((train_row_index, validated))
+                    else:
+                        replacement_index = rng.randint(0, train_row_index)
+                        if replacement_index < subset_limit:
+                            random_reservoir[replacement_index] = (train_row_index, validated)
+                    continue
+
+                if first_n_writer is not None and sampled_rows < subset_limit:
+                    first_n_writer.write(validated)
+                    sampled_rows += 1
+    finally:
+        if first_n_writer is not None:
+            first_n_writer.close()
+
+    if subset_limit is None:
+        shutil.copyfile(train_path, sampled_path)
+        sampled_rows = train_rows
+        return train_rows, eval_rows, sampled_rows
+
+    if sampling_strategy == "random":
+        sorted_sampled_rows = sorted(random_reservoir, key=lambda item: item[0])
+        with _JsonlStreamWriter(sampled_path) as sampled_writer:
+            for _, sampled_row in sorted_sampled_rows:
+                sampled_writer.write(sampled_row)
+        sampled_rows = len(sorted_sampled_rows)
+
+    return train_rows, eval_rows, sampled_rows
+
+
 def _write_ood_placeholder(data_cfg: Mapping[str, Any], out_path: Path) -> None:
     ood_cfg = data_cfg.get("ood_test", {})
     if not isinstance(ood_cfg, Mapping) or not bool(ood_cfg.get("enabled", False)):
@@ -763,16 +1016,11 @@ def run_prepare_data(
     if not isinstance(data_cfg, Mapping):
         raise PrepareDataError("data config must be a mapping")
 
-    raw_rows = _load_raw_rows(data_cfg)
-    normalized = _normalize_rows(raw_rows, data_cfg)
-    normalized = _apply_length_policy(normalized, cfg)
-
     split_cfg = data_cfg.get("split", {})
     if not isinstance(split_cfg, Mapping):
         split_cfg = {}
     eval_ratio = float(split_cfg.get("eval_ratio", 0.02))
     split_seed = int(split_cfg.get("seed", 42))
-    train_rows, eval_rows = _split_train_eval(normalized, eval_ratio, split_seed)
 
     sampling_cfg = data_cfg.get("sampling", {})
     if not isinstance(sampling_cfg, Mapping):
@@ -780,26 +1028,59 @@ def run_prepare_data(
     sampling_strategy = str(sampling_cfg.get("strategy", "first_n"))
     sampling_seed = int(sampling_cfg.get("seed", 42))
     subset_size = data_cfg.get("subset_size")
-    sampled_rows = _sample_train_rows(
-        train_rows,
-        int(subset_size) if subset_size is not None else None,
-        sampling_strategy,
-        sampling_seed,
-    )
+    subset_limit = int(subset_size) if subset_size is not None else None
 
     out_dir = Path("artifacts/data")
     out_dir.mkdir(parents=True, exist_ok=True)
-    write_jsonl(out_dir / "datapool.normalized.jsonl", normalized)
-    write_jsonl(out_dir / "datapool.train.jsonl", train_rows)
-    write_jsonl(out_dir / "datapool.eval.jsonl", eval_rows)
-    write_jsonl(out_dir / "datapool.train.sampled.jsonl", sampled_rows)
+
+    normalized_path = out_dir / "datapool.normalized.jsonl"
+    train_path = out_dir / "datapool.train.jsonl"
+    eval_path = out_dir / "datapool.eval.jsonl"
+    sampled_path = out_dir / "datapool.train.sampled.jsonl"
+    split_draws_path = out_dir / ".prepare_data.eval_draws.bin"
+
+    rng = random.Random(split_seed)
+    normalized_rows = 0
+    try:
+        with _JsonlStreamWriter(normalized_path) as normalized_writer, split_draws_path.open(
+            "wb"
+        ) as split_draws_writer:
+            stream = _iter_raw_rows(data_cfg)
+            stream = _iter_normalized_rows(stream, data_cfg)
+            stream = _iter_rows_with_length_policy(stream, cfg)
+            for row in stream:
+                validated = validate_artifact_row(row, "normalized")
+                normalized_writer.write(validated)
+                split_draws_writer.write(struct.pack("<d", rng.random()))
+                normalized_rows += 1
+
+        eval_count = _target_eval_count(normalized_rows, eval_ratio)
+        eval_indices = _select_eval_indices_from_draws(
+            split_draws_path,
+            total_rows=normalized_rows,
+            eval_count=eval_count,
+        )
+        train_rows, eval_rows, sampled_rows = _build_split_artifacts(
+            normalized_path=normalized_path,
+            train_path=train_path,
+            eval_path=eval_path,
+            sampled_path=sampled_path,
+            eval_indices=eval_indices,
+            subset_size=subset_limit,
+            sampling_strategy=sampling_strategy,
+            sampling_seed=sampling_seed,
+        )
+    finally:
+        if split_draws_path.exists():
+            split_draws_path.unlink()
+
     _write_ood_placeholder(data_cfg, out_dir / "ood_test.jsonl")
 
     summary = {
-        "normalized_rows": len(normalized),
-        "train_rows": len(train_rows),
-        "eval_rows": len(eval_rows),
-        "sampled_rows": len(sampled_rows),
+        "normalized_rows": normalized_rows,
+        "train_rows": train_rows,
+        "eval_rows": eval_rows,
+        "sampled_rows": sampled_rows,
         "artifact_dir": str(out_dir),
     }
     (out_dir / "prepare_data_summary.json").write_text(

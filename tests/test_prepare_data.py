@@ -134,6 +134,49 @@ def test_prepare_data_local_jsonl_runtime_uses_configured_source(tmp_path: Path)
         os.chdir(old_cwd)
 
 
+def test_prepare_data_streaming_split_keeps_exact_eval_count(tmp_path: Path) -> None:
+    workdir = tmp_path / "work_stream_split"
+    workdir.mkdir(parents=True, exist_ok=True)
+    raw_path = workdir / "raw.jsonl"
+    rows = []
+    for idx in range(10):
+        rows.append(
+            json.dumps(
+                {
+                    "id": f"row-{idx:04d}",
+                    "dataset": "stream_split_dataset",
+                    "source_text": f"Streaming row {idx}",
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+        )
+    raw_path.write_text("\n".join(rows) + "\n", encoding="utf-8")
+
+    old_cwd = Path.cwd()
+    try:
+        os.chdir(workdir)
+        run_prepare_data(
+            config_path=str(ROOT / "configs" / "scp_stage4.yaml"),
+            overrides=[
+                "data.runtime.mode=local_jsonl",
+                f"data.runtime.local_jsonl_path={raw_path}",
+                "data.split.eval_ratio=0.2",
+                "data.sampling.strategy=first_n",
+                "data.subset_size=3",
+            ],
+        )
+        out_dir = workdir / "artifacts" / "data"
+        train_rows = read_jsonl(out_dir / "datapool.train.jsonl")
+        eval_rows = read_jsonl(out_dir / "datapool.eval.jsonl")
+        sampled_rows = read_jsonl(out_dir / "datapool.train.sampled.jsonl")
+        assert len(eval_rows) == 2
+        assert len(train_rows) == 8
+        assert len(sampled_rows) == 3
+    finally:
+        os.chdir(old_cwd)
+
+
 def test_prepare_data_hf_runtime_falls_back_to_snapshot_jsonl(tmp_path: Path, monkeypatch) -> None:
     workdir = tmp_path / "work_hf_fallback"
     workdir.mkdir(parents=True, exist_ok=True)

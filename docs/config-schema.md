@@ -191,6 +191,7 @@ data:
   length:
     enabled: true
     mode: tokenizer
+    tokenizer_batch_size: 512
     max_total_tokens: 8192
     max_source_tokens: 4000
     max_output_tokens: 4096
@@ -235,6 +236,7 @@ The validator must check:
 - `data.length.prompt_template_tokens >= 0`
 - `data.length.min_available_output_tokens > 0`
 - `data.length.safety_margin_tokens >= 0`
+- `data.length.tokenizer_batch_size > 0`
 - `data.length.max_source_tokens + data.length.min_available_output_tokens + data.length.prompt_template_tokens + data.length.safety_margin_tokens <= data.length.max_total_tokens`
 
 Runtime budget calculation:

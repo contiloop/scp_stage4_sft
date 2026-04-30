@@ -565,6 +565,8 @@ data:
     hf:
       dataset_download_workers: 2
   num_workers: 4
+  length:
+    tokenizer_batch_size: 512
 ```
 
 Rules:
@@ -573,9 +575,35 @@ Rules:
 - Default is `4`.
 - `runtime.hf.dataset_download_workers` controls parallelism across datasets.
 - `num_workers` controls Hugging Face `load_dataset(..., num_proc=...)` when `streaming=false`.
-- Use multiprocessing for extraction, normalization, length checking, and optional splitting.
+- `length.tokenizer_batch_size` controls batch length counting when `length.mode=tokenizer`.
+- Use multiprocessing for dataset loading/downloading; normalization and split writing must remain deterministic.
 - Output must remain deterministic.
 - Random operations must use configured seed.
+
+---
+
+## 11.1 Streaming Architecture (Current Prepare-Data)
+
+`prepare-data` now runs in a streaming architecture to avoid loading full datapool lists in memory.
+
+Execution shape:
+
+```txt
+raw row iterator
+  → normalized row iterator
+  → length policy iterator (batched tokenizer length counting)
+  → write datapool.normalized.jsonl (streaming)
+  → deterministic train/eval split from normalized artifact (second pass)
+  → write train/eval/sample artifacts
+```
+
+Details:
+
+- `raw_rows -> normalized -> filtered` list materialization is removed.
+- Rows are validated and written to `datapool.normalized.jsonl` as they stream.
+- `tokenizer.encode` per-row loops are replaced with batch length counting (`tokenizer_batch_size`).
+- Train/eval split count remains deterministic (`ceil(total * eval_ratio)` with seed).
+- Sampling (`first_n` or `random`) is applied while building train/eval outputs, without loading full train rows into memory.
 
 ---
 
@@ -607,7 +635,7 @@ With `fraction: 0.02`, a datapool of 10,000 rows produces subsets of about 200 r
 
 Rules:
 
-- processing order is `load raw rows → normalize/emitted translatable fields → length split/filter → train/eval split → subset construction`
+- processing order is `load raw rows → normalize/emitted translatable fields → length split/filter → write normalized artifact → deterministic train/eval split → subset construction`
 - subset construction must be deterministic given seed and effective config
 - every row must preserve its original `row_id`
 - subset membership must be reproducible without relying on runtime state
@@ -790,6 +818,7 @@ data:
   length:
     enabled: true
     mode: tokenizer
+    tokenizer_batch_size: 512
     max_total_tokens: 8192
     max_source_tokens: 4000
     max_output_tokens: 4096
@@ -851,11 +880,11 @@ When implementing this module:
 
 1. Start with config schema.
 2. Implement text extraction helpers.
-3. Implement row normalization.
-4. Implement tokenizer-aware length validation.
-5. Implement sentence-aware splitting.
+3. Implement row normalization as an iterator.
+4. Implement tokenizer-aware length validation with batched token counting.
+5. Implement sentence-aware splitting for overflow.
 6. Implement deterministic train/eval split.
-7. Implement JSONL writers.
+7. Implement streaming JSONL writers and second-pass split artifact builder.
 8. Add multiprocessing after single-process logic is correct.
 9. Add unit tests with mocked rows.
 

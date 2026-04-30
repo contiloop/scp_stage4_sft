@@ -121,6 +121,12 @@ make run-subset-real-from-prepared RUN_ID=real_subset_001
 make run-stage-real-from-prepared RUN_ID=real_stage_001
 ```
 
+Check source mix ratio anytime:
+
+```sh
+make data-source-ratio
+```
+
 ### 6. Train (standard path with local preprocess)
 
 Run one subset:

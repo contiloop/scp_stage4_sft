@@ -26,7 +26,7 @@ HF_COMMIT_MESSAGE ?=
 .PHONY: set set-real-env validate-config validate-jsonl validate-local test-local smoke-local \
 	validate-remote-env smoke-remote-qe smoke-remote-model smoke-remote-api dry-run-remote-subset \
 	validate-real-config run-subset-real run-stage-real run-subset-real-from-prepared run-stage-real-from-prepared \
-	prepare-data run-subset run-stage eval eval-ood \
+	prepare-data run-subset run-stage eval eval-ood data-source-ratio \
 	infer-q1 train-collapse-lora infer-q2 score unload-collapse-lora call-api update-base \
 	pack-prepared-data upload-prepared-data download-prepared-data
 
@@ -220,6 +220,15 @@ eval:
 # exit behavior: 0 on mocked OOD eval contract pass; non-zero on contract failure
 eval-ood:
 	@echo "eval-ood: mocked in foundation mode (no real reference-based evaluation)"
+
+# Target: data-source-ratio
+# required config keys: none
+# input artifacts: artifacts/data/datapool.{train,eval,normalized}.jsonl (existing files only)
+# output artifacts: none (prints per-dataset ratio report)
+# runtime: local CPU only
+# exit behavior: 0 when at least one requested file is reported; non-zero when none exist
+data-source-ratio:
+	@PYTHONPATH=$(PYTHONPATH) $(PY) -m scp_stage4.pipeline.data_source_ratio
 
 # Target: validate-remote-env
 # required config keys: external_api.primary.api_key_env and full composed config validity

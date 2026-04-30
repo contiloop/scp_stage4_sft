@@ -50,6 +50,17 @@ data:
       split: train
 ```
 
+Important repository-layout rule:
+
+- If a Hub dataset repo contains non-training JSON artifacts (for example `*_checkpoint.json` or stats files) next to training shards, always set `data.datasets[*].data_files` explicitly to the train shard pattern.
+- Do not rely on implicit repository-wide file discovery for mixed-layout repos, because it can introduce schema-cast failures and expensive fallback paths.
+
+Pre-optimization dataset structure check:
+
+- Before implementing throughput optimizations, inspect the dataset repository tree and README YAML config to confirm the true train file layout.
+- Verify that `data_files` patterns target only train shards and exclude operational metadata artifacts.
+- Run a small-sample dry load (for example with a low `max_rows_per_dataset`) to validate resolved file count, schema consistency, and row-id assumptions before full-scale runs.
+
 Expected English source columns:
 
 ```yaml

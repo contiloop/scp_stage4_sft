@@ -191,7 +191,7 @@ data:
   length:
     enabled: true
     mode: tokenizer
-    tokenizer_batch_size: 2048
+    tokenizer_batch_size: 16384
     max_total_tokens: 8192
     max_source_tokens: 4000
     max_output_tokens: 4096

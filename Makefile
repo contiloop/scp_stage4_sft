@@ -10,12 +10,25 @@ PYTHONPATH := src
 CONFIG ?= configs/scp_stage4.yaml
 RUN_ID ?= local_contract
 OVERRIDES ?=
+PREPARED_BUNDLE_ROOT ?= artifacts/prepared_data_bundles
+PREPARED_BUNDLE_TAG ?=
+PREPARED_BUNDLE_DIR ?=
+HF_DATASET_REPO ?=
+HF_DATASET_PATH ?=
+HF_DATASET_REVISION ?= main
+HF_DATASET_TAG ?=
+HF_DATASET_TAG_MESSAGE ?=
+HF_DATASET_TAG_EXIST_OK ?= 0
+HF_DATASET_PRIVATE ?= 0
+HF_CREATE_REPO ?= 1
+HF_COMMIT_MESSAGE ?=
 
 .PHONY: set set-real-env validate-config validate-jsonl validate-local test-local smoke-local \
 	validate-remote-env smoke-remote-qe smoke-remote-model smoke-remote-api dry-run-remote-subset \
-	validate-real-config run-subset-real run-stage-real \
+	validate-real-config run-subset-real run-stage-real run-subset-real-from-prepared run-stage-real-from-prepared \
 	prepare-data run-subset run-stage eval eval-ood \
-	infer-q1 train-collapse-lora infer-q2 score unload-collapse-lora call-api update-base
+	infer-q1 train-collapse-lora infer-q2 score unload-collapse-lora call-api update-base \
+	pack-prepared-data upload-prepared-data download-prepared-data
 
 # Target: set
 # required config keys: none
@@ -279,3 +292,76 @@ run-subset-real: prepare-data
 # exit behavior: 0 when all subsets complete; non-zero on first contract/runtime failure
 run-stage-real: prepare-data
 	@PYTHONPATH=$(PYTHONPATH) $(PY) -m scp_stage4.pipeline.step_subset run-stage --config configs/scp_stage4_real.yaml --run-id $(RUN_ID) $(OVERRIDES)
+
+# Target: run-subset-real-from-prepared
+# required config keys: same as run-subset-real
+# input artifacts: artifacts/data/datapool.train*.jsonl restored from prepared bundle
+# output artifacts: full subset artifact chain under artifacts/runs/$(RUN_ID)
+# runtime: subprocess backends for inference/QE/API/training
+# exit behavior: 0 on successful subset completion; non-zero with structured failure logs
+run-subset-real-from-prepared:
+	@PYTHONPATH=$(PYTHONPATH) $(PY) -m scp_stage4.pipeline.step_subset run-subset --config configs/scp_stage4_real.yaml --run-id $(RUN_ID) --subset-idx 0 --use-prepared-data $(OVERRIDES)
+
+# Target: run-stage-real-from-prepared
+# required config keys: same as run-stage-real
+# input artifacts: artifacts/data/datapool.train*.jsonl restored from prepared bundle
+# output artifacts: run_stage_summary.json + per-subset artifacts
+# runtime: subprocess backends for inference/QE/API/training
+# exit behavior: 0 when all subsets complete; non-zero on first contract/runtime failure
+run-stage-real-from-prepared:
+	@PYTHONPATH=$(PYTHONPATH) $(PY) -m scp_stage4.pipeline.step_subset run-stage --config configs/scp_stage4_real.yaml --run-id $(RUN_ID) $(OVERRIDES)
+
+# Target: pack-prepared-data
+# required config keys: full data preparation config used for this datapool
+# input artifacts: artifacts/data/{datapool.normalized.jsonl,datapool.train.jsonl,datapool.eval.jsonl,prepare_data_summary.json}
+# output artifacts: artifacts/prepared_data_bundles/<tag>/ + manifest/effective_config/config_hash
+# runtime: local CPU only
+# exit behavior: 0 on successful bundle creation; non-zero on missing artifacts/config mismatch
+pack-prepared-data:
+	@PYTHONPATH=$(PYTHONPATH) $(PY) -m scp_stage4.pipeline.prepared_data_hub pack \
+		--config $(CONFIG) \
+		--artifacts-dir artifacts/data \
+		--output-root $(PREPARED_BUNDLE_ROOT) \
+		$(if $(strip $(PREPARED_BUNDLE_TAG)),--tag $(PREPARED_BUNDLE_TAG),) \
+		$(OVERRIDES)
+
+# Target: upload-prepared-data
+# required config keys: none (uses packaged bundle + HF auth)
+# input artifacts: one bundle directory under artifacts/prepared_data_bundles/
+# output artifacts: uploaded bundle at HF dataset repo path (optionally tagged)
+# runtime: network + HF token required
+# exit behavior: 0 on successful upload; non-zero on missing repo/bundle/auth failures
+upload-prepared-data:
+	@test -n "$(HF_DATASET_REPO)" || (echo "HF_DATASET_REPO is required" >&2; exit 2)
+	@bundle_dir="$(PREPARED_BUNDLE_DIR)"; \
+	if [ -z "$$bundle_dir" ]; then \
+		test -n "$(PREPARED_BUNDLE_TAG)" || (echo "Set PREPARED_BUNDLE_DIR or PREPARED_BUNDLE_TAG" >&2; exit 2); \
+		bundle_dir="$(PREPARED_BUNDLE_ROOT)/$(PREPARED_BUNDLE_TAG)"; \
+	fi; \
+	PYTHONPATH=$(PYTHONPATH) $(PY) -m scp_stage4.pipeline.prepared_data_hub upload \
+		--repo-id "$(HF_DATASET_REPO)" \
+		--bundle-dir "$$bundle_dir" \
+		--revision "$(HF_DATASET_REVISION)" \
+		$(if $(strip $(HF_DATASET_PATH)),--path-in-repo $(HF_DATASET_PATH),) \
+		$(if $(filter 1 true TRUE yes YES,$(HF_DATASET_PRIVATE)),--private,) \
+		$(if $(filter 0 false FALSE no NO,$(HF_CREATE_REPO)),--no-create-repo,) \
+		$(if $(strip $(HF_COMMIT_MESSAGE)),--commit-message "$(HF_COMMIT_MESSAGE)",) \
+		$(if $(strip $(HF_DATASET_TAG)),--tag $(HF_DATASET_TAG),) \
+		$(if $(strip $(HF_DATASET_TAG_MESSAGE)),--tag-message "$(HF_DATASET_TAG_MESSAGE)",) \
+		$(if $(filter 1 true TRUE yes YES,$(HF_DATASET_TAG_EXIST_OK)),--tag-exist-ok,)
+
+# Target: download-prepared-data
+# required config keys: none (uses HF dataset path/revision)
+# input artifacts: HF dataset bundle path containing required prepared artifacts
+# output artifacts: artifacts/data/*.jsonl + prepare_data_summary.json + effective_config/config_hash/manifest
+# runtime: network + HF token for private repos
+# exit behavior: 0 on successful restore; non-zero on repo/path/revision mismatches
+download-prepared-data:
+	@test -n "$(HF_DATASET_REPO)" || (echo "HF_DATASET_REPO is required" >&2; exit 2)
+	@test -n "$(HF_DATASET_PATH)" || (echo "HF_DATASET_PATH is required (ex: prepared/v2026-04-30)" >&2; exit 2)
+	@PYTHONPATH=$(PYTHONPATH) $(PY) -m scp_stage4.pipeline.prepared_data_hub download \
+		--repo-id "$(HF_DATASET_REPO)" \
+		--path-in-repo "$(HF_DATASET_PATH)" \
+		--revision "$(HF_DATASET_REVISION)" \
+		--output-dir artifacts/data \
+		--local-download-dir artifacts/prepared_data_download

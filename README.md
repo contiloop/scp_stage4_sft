@@ -56,7 +56,57 @@ make test-local
 make prepare-data CONFIG=configs/scp_stage4_real.yaml
 ```
 
-### 6. Train
+### 5A. Publish processed data bundle to HF dataset repo (recommended)
+
+This packages and uploads:
+
+- `datapool.normalized.jsonl`
+- `datapool.train.jsonl`
+- `datapool.eval.jsonl`
+- `prepare_data_summary.json`
+- `effective_config.yaml`
+- `config_hash.txt`
+- `prepared_manifest.json`
+
+```sh
+DATASET_REPO="<org_or_user>/scp-stage4-prepared"
+BUNDLE_TAG="v2026-04-30-real"
+
+make pack-prepared-data \
+  CONFIG=configs/scp_stage4_real.yaml \
+  PREPARED_BUNDLE_TAG="${BUNDLE_TAG}"
+
+make upload-prepared-data \
+  HF_DATASET_REPO="${DATASET_REPO}" \
+  PREPARED_BUNDLE_TAG="${BUNDLE_TAG}" \
+  HF_DATASET_PATH="prepared/${BUNDLE_TAG}" \
+  HF_DATASET_REVISION=main \
+  HF_DATASET_TAG="${BUNDLE_TAG}"
+```
+
+`HF_DATASET_TAG` creates a Hub git tag on the uploaded commit so the bundle can be pinned by immutable revision later.
+If you intentionally reuse an existing tag name, add `HF_DATASET_TAG_EXIST_OK=1`.
+
+### 5B. Reuse processed data on a new instance (skip prepare-data)
+
+```sh
+DATASET_REPO="<org_or_user>/scp-stage4-prepared"
+BUNDLE_TAG="v2026-04-30-real"
+
+make download-prepared-data \
+  HF_DATASET_REPO="${DATASET_REPO}" \
+  HF_DATASET_PATH="prepared/${BUNDLE_TAG}" \
+  HF_DATASET_REVISION="${BUNDLE_TAG}"
+```
+
+Then start directly from subset/stage execution:
+
+```sh
+make run-subset-real-from-prepared RUN_ID=real_subset_001
+make run-stage-real-from-prepared RUN_ID=real_stage_001
+```
+
+### 6. Train (standard path with local preprocess)
 
 Run one subset:
 

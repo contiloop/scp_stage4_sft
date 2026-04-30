@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import json
+import errno
 import sys
 import types
 from pathlib import Path
+
+import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
@@ -12,6 +15,7 @@ if str(SRC) not in sys.path:
 
 from scp_stage4.pipeline.prepared_data_hub import (  # noqa: E402
     package_prepared_data,
+    _materialize_bundle_file,
     restore_prepared_data_from_hub,
     upload_prepared_data_bundle,
 )
@@ -167,3 +171,30 @@ def test_restore_prepared_data_from_hub_restores_required_files(monkeypatch, tmp
     assert isinstance(snapshot_kwargs, dict)
     assert snapshot_kwargs["repo_type"] == "dataset"
     assert snapshot_kwargs["revision"] == "v1"
+
+
+def test_materialize_bundle_file_falls_back_to_copy(monkeypatch, tmp_path: Path) -> None:
+    source = tmp_path / "source.jsonl"
+    target = tmp_path / "target.jsonl"
+    _write_text(source, '{"id":"x"}\n')
+
+    def _raise_cross_device(src: Path, dst: Path) -> None:
+        raise OSError(errno.EXDEV, "cross-device link")
+
+    monkeypatch.setattr("scp_stage4.pipeline.prepared_data_hub.os.link", _raise_cross_device)
+    mode = _materialize_bundle_file(source, target)
+    assert mode == "copy"
+    assert target.read_text(encoding="utf-8") == source.read_text(encoding="utf-8")
+
+
+def test_materialize_bundle_file_propagates_unexpected_oserror(monkeypatch, tmp_path: Path) -> None:
+    source = tmp_path / "source.jsonl"
+    target = tmp_path / "target.jsonl"
+    _write_text(source, '{"id":"x"}\n')
+
+    def _raise_quota(src: Path, dst: Path) -> None:
+        raise OSError(errno.EDQUOT, "quota exceeded")
+
+    monkeypatch.setattr("scp_stage4.pipeline.prepared_data_hub.os.link", _raise_quota)
+    with pytest.raises(OSError):
+        _materialize_bundle_file(source, target)

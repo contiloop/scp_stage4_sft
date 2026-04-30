@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import argparse
 from datetime import datetime, timezone
+import errno
 import hashlib
 import json
+import os
 from pathlib import Path
 import shutil
 from typing import Any, Callable, Mapping
@@ -49,7 +51,7 @@ def _copy_required_artifacts(*, source_dir: Path, target_dir: Path) -> list[str]
         if not source_path.exists():
             missing.append(name)
             continue
-        shutil.copy2(source_path, target_dir / name)
+        _materialize_bundle_file(source_path, target_dir / name)
         copied.append(name)
 
     if missing:
@@ -61,10 +63,36 @@ def _copy_required_artifacts(*, source_dir: Path, target_dir: Path) -> list[str]
         source_path = source_dir / name
         if not source_path.exists():
             continue
-        shutil.copy2(source_path, target_dir / name)
+        _materialize_bundle_file(source_path, target_dir / name)
         copied.append(name)
 
     return copied
+
+
+def _materialize_bundle_file(source: Path, target: Path) -> str:
+    """
+    Materialize bundle file with minimal extra disk usage.
+
+    Returns "hardlink" or "copy".
+    """
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if target.exists():
+        target.unlink()
+    try:
+        os.link(source, target)
+        return "hardlink"
+    except OSError as exc:
+        if exc.errno in {
+            errno.EXDEV,
+            errno.EPERM,
+            errno.EACCES,
+            errno.ENOTSUP,
+            errno.ENOSYS,
+            errno.EMLINK,
+        }:
+            shutil.copy2(source, target)
+            return "copy"
+        raise
 
 
 def package_prepared_data(

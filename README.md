@@ -50,6 +50,21 @@ make validate-real-config
 make test-local
 ```
 
+### 4A. Optional: tokenizer CPU parallelism for `prepare-data`
+
+For large runs with `data.length.mode=tokenizer`, enabling tokenizer parallelism often speeds up normalization.
+
+```sh
+export TOKENIZERS_PARALLELISM=true
+export RAYON_NUM_THREADS=16   # set to your CPU core count (or slightly lower)
+```
+
+Notes:
+
+- Usually helpful when running one large `prepare-data` job.
+- Not always better if many CPU-heavy jobs run concurrently (oversubscription can hurt throughput).
+- If memory pressure is high, reduce `RAYON_NUM_THREADS`.
+
 ### 5. Preprocess
 
 ```sh

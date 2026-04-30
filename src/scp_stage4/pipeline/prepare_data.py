@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import argparse
 import csv
+import errno
 import gzip
 import heapq
 import json
 import math
+import os
 import random
 import re
 import shutil
@@ -129,6 +131,34 @@ class _ProgressReporter:
         )
         self._last_report_time = now
         self._last_report_rows = rows
+
+
+def _materialize_duplicate_file(source: Path, target: Path) -> str:
+    """
+    Materialize `target` from `source` with minimal extra disk usage.
+
+    Returns:
+      "hardlink" when a same-filesystem hardlink is created,
+      "copy" when it falls back to byte copy.
+    """
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if target.exists():
+        target.unlink()
+    try:
+        os.link(source, target)
+        return "hardlink"
+    except OSError as exc:
+        if exc.errno in {
+            errno.EXDEV,
+            errno.EPERM,
+            errno.EACCES,
+            errno.ENOTSUP,
+            errno.ENOSYS,
+            errno.EMLINK,
+        }:
+            shutil.copyfile(source, target)
+            return "copy"
+        raise
 
 
 def _normalized_parquet_schema() -> Any:
@@ -1247,7 +1277,7 @@ def _build_split_artifacts(
             first_n_writer.close()
 
     if subset_limit is None:
-        shutil.copyfile(train_path, sampled_path)
+        _materialize_duplicate_file(train_path, sampled_path)
         sampled_rows = train_rows
         return train_rows, eval_rows, sampled_rows
 

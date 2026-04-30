@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import errno
 import json
 import os
 import sys
@@ -256,6 +257,20 @@ def test_prepare_data_streaming_split_keeps_exact_eval_count(tmp_path: Path) -> 
         assert len(sampled_rows) == 3
     finally:
         os.chdir(old_cwd)
+
+
+def test_materialize_duplicate_file_falls_back_to_copy(monkeypatch, tmp_path: Path) -> None:
+    source = tmp_path / "train.jsonl"
+    target = tmp_path / "sampled.jsonl"
+    source.write_text('{"id":"x"}\n', encoding="utf-8")
+
+    def _raise_exdev(src: Path, dst: Path) -> None:
+        raise OSError(errno.EXDEV, "cross-device link")
+
+    monkeypatch.setattr(prepare_data_module.os, "link", _raise_exdev)
+    mode = prepare_data_module._materialize_duplicate_file(source, target)
+    assert mode == "copy"
+    assert target.read_text(encoding="utf-8") == source.read_text(encoding="utf-8")
 
 
 def test_prepare_data_summary_includes_length_policy_skip_counts(tmp_path: Path) -> None:

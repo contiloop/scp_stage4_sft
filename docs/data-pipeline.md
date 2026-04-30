@@ -628,6 +628,35 @@ Details:
 - Train/eval split count remains deterministic (`ceil(total * eval_ratio)` with seed).
 - Sampling (`first_n` or `random`) is applied while building train/eval outputs, without loading full train rows into memory.
 
+Operational visibility (`prepare_data_summary.json`):
+
+```json
+{
+  "normalized_rows": 1032456,
+  "train_rows": 1011807,
+  "eval_rows": 20649,
+  "sampled_rows": 1011807,
+  "length_policy": {
+    "input_rows": 1098723,
+    "output_rows": 1032456,
+    "split_input_rows": 42117,
+    "split_output_rows": 29104,
+    "skipped_overflow_policy": 0,
+    "skipped_truncate_budget": 0,
+    "skipped_long_sentence": 1834,
+    "skipped_max_chunks_exceeded": 6427,
+    "skipped_split_empty": 2906,
+    "skipped_total": 11167
+  }
+}
+```
+
+Interpretation guide:
+
+- `input_rows - output_rows` should approximately match `skipped_total` after accounting for split amplification.
+- A rising `skipped_max_chunks_exceeded` usually means `max_chunks_per_row` is too strict for the current corpus.
+- A rising `skipped_long_sentence` usually means many rows contain single very long sentences and `fallback_for_long_sentence` may need adjustment.
+
 ---
 
 ## 12. Subset Construction

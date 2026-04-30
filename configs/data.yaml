@@ -24,7 +24,7 @@
       {
         "name": "alwaysgood/sec-10k-pre-processed",
         "split": "train",
-        "data_files": {"train": "translation_dataset.parquet"}
+        "data_files": {"train": "translation_dataset_shards/translation_dataset-*.parquet"}
       }
     ],
     "text_columns": ["source_text", "text"],

@@ -314,6 +314,62 @@ def test_run_subset_use_prepared_data_requires_prepare_data(tmp_path: Path, monk
         )
 
 
+def test_run_subset_prefers_parquet_before_jsonl(tmp_path: Path, monkeypatch) -> None:
+    pyarrow_parquet = pytest.importorskip("pyarrow.parquet")
+    from scp_stage4.data import write_jsonl
+
+    monkeypatch.chdir(tmp_path)
+    config_path = str(Path(__file__).resolve().parents[1] / "configs" / "scp_stage4.yaml")
+    run_prepare_data(
+        config_path=config_path,
+        overrides=[
+            "data.split.eval_ratio=0",
+            "data.subset_size=2",
+        ],
+    )
+
+    train_parquet_path = Path("artifacts/data/datapool.train.parquet")
+    train_jsonl_path = Path("artifacts/data/datapool.train.jsonl")
+    parquet_rows = pyarrow_parquet.read_table(train_parquet_path).to_pylist()
+    assert parquet_rows
+    expected_first_id = str(parquet_rows[0]["id"])
+
+    write_jsonl(
+        train_jsonl_path,
+        [
+            {
+                "id": "jsonl_priority_probe_row",
+                "dataset": "jsonl_probe",
+                "source": "JSONL probe row should not be used when parquet exists.",
+                "metadata": {
+                    "title": None,
+                    "document_type": "other",
+                    "text_role": "body",
+                    "original_id": "probe-1",
+                    "parent_id": None,
+                    "chunk_idx": None,
+                },
+            }
+        ],
+        ensure_ascii=False,
+    )
+
+    run_id = "test_parquet_priority"
+    summary = run_subset(
+        config_path=config_path,
+        run_id_override=run_id,
+        subset_idx=0,
+        subset_size_override=1,
+        use_prepared_data=True,
+        overrides=["pipeline.subset.shuffle=false"],
+    )
+    assert int(summary["counts"]["input"]) == 1
+
+    input_rows = read_jsonl(_subset_root(run_id) / "input.jsonl")
+    assert input_rows
+    assert input_rows[0]["id"] == expected_first_id
+
+
 def test_run_subset_writes_subset_archive_when_enabled() -> None:
     run_id = "test_step_subset_archive_enabled"
     _cleanup(run_id)

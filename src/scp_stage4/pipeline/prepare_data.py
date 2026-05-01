@@ -400,6 +400,23 @@ def _iter_jsonl_mapping_rows(path: Path) -> Iterable[dict[str, Any]]:
                 yield dict(payload)
 
 
+def _write_parquet_copy_from_jsonl(
+    *,
+    source_path: Path,
+    target_path: Path,
+    row_group_size: int,
+) -> int:
+    if pa is None or pq is None:
+        return 0
+    written = 0
+    with _ParquetStreamWriter(target_path, row_group_size=row_group_size) as writer:
+        for row in _iter_jsonl_mapping_rows(source_path):
+            validated = validate_artifact_row(row, "normalized")
+            writer.write(validated)
+            written += 1
+    return written
+
+
 def _append_data_file_patterns(patterns: list[str], value: Any) -> None:
     if isinstance(value, str):
         candidate = value.strip()
@@ -1414,6 +1431,9 @@ def run_prepare_data(
     train_path = out_dir / "datapool.train.jsonl"
     eval_path = out_dir / "datapool.eval.jsonl"
     sampled_path = out_dir / "datapool.train.sampled.jsonl"
+    train_parquet_path = out_dir / "datapool.train.parquet"
+    eval_parquet_path = out_dir / "datapool.eval.parquet"
+    sampled_parquet_path = out_dir / "datapool.train.sampled.parquet"
     split_draws_path = out_dir / ".prepare_data.eval_draws.bin"
     intermediate_jsonl_path = out_dir / ".prepare_data.normalized.tmp.jsonl"
 
@@ -1511,11 +1531,34 @@ def run_prepare_data(
 
     _write_ood_placeholder(data_cfg, out_dir / "ood_test.jsonl")
 
+    train_parquet_rows = 0
+    eval_parquet_rows = 0
+    sampled_parquet_rows = 0
+    if pa is not None and pq is not None:
+        train_parquet_rows = _write_parquet_copy_from_jsonl(
+            source_path=train_path,
+            target_path=train_parquet_path,
+            row_group_size=parquet_row_group_size,
+        )
+        eval_parquet_rows = _write_parquet_copy_from_jsonl(
+            source_path=eval_path,
+            target_path=eval_parquet_path,
+            row_group_size=parquet_row_group_size,
+        )
+        sampled_parquet_rows = _write_parquet_copy_from_jsonl(
+            source_path=sampled_path,
+            target_path=sampled_parquet_path,
+            row_group_size=parquet_row_group_size,
+        )
+
     summary = {
         "normalized_rows": normalized_rows,
         "train_rows": train_rows,
         "eval_rows": eval_rows,
         "sampled_rows": sampled_rows,
+        "train_parquet_rows": train_parquet_rows,
+        "eval_parquet_rows": eval_parquet_rows,
+        "sampled_parquet_rows": sampled_parquet_rows,
         "intermediate_format": intermediate_format,
         "progress_enabled": progress_enabled,
         "length_policy": length_policy_stats.as_dict(),

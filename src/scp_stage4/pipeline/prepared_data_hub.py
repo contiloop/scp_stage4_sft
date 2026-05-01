@@ -10,7 +10,7 @@ import json
 import os
 from pathlib import Path
 import shutil
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Iterable, Mapping
 
 from scp_stage4.artifacts import compute_config_hash, persist_effective_config_artifacts
 from scp_stage4.config.loader import compose_config
@@ -22,16 +22,26 @@ class PreparedDataHubError(RuntimeError):
 
 
 _REQUIRED_FILES = (
-    "datapool.normalized.jsonl",
-    "datapool.train.jsonl",
-    "datapool.eval.jsonl",
+    "datapool.normalized.parquet",
+    "datapool.train.parquet",
+    "datapool.eval.parquet",
     "prepare_data_summary.json",
 )
 _OPTIONAL_FILES = (
+    "datapool.normalized.jsonl",
+    "datapool.train.jsonl",
+    "datapool.eval.jsonl",
+    "datapool.train.sampled.parquet",
     "datapool.train.sampled.jsonl",
-    "datapool.normalized.parquet",
     "ood_test.jsonl",
 )
+
+try:
+    import pyarrow as pa  # type: ignore
+    import pyarrow.parquet as pq  # type: ignore
+except Exception:
+    pa = None  # type: ignore[assignment]
+    pq = None  # type: ignore[assignment]
 
 
 def _sha256_file(path: Path) -> str:
@@ -40,6 +50,68 @@ def _sha256_file(path: Path) -> str:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _iter_jsonl_row_ids(path: Path) -> Iterable[str]:
+    with path.open("r", encoding="utf-8", newline="\n") as handle:
+        for line_no, line in enumerate(handle, start=1):
+            raw = line.strip()
+            if not raw:
+                continue
+            try:
+                payload = json.loads(raw)
+            except json.JSONDecodeError as exc:
+                raise PreparedDataHubError(
+                    f"Invalid JSONL in prepared artifact {path}:{line_no}: {exc}"
+                ) from exc
+            if not isinstance(payload, Mapping):
+                raise PreparedDataHubError(
+                    f"Invalid JSONL object in prepared artifact {path}:{line_no}"
+                )
+            row_id = payload.get("id")
+            if row_id is None:
+                raise PreparedDataHubError(
+                    f"Missing id in prepared artifact {path}:{line_no}"
+                )
+            yield str(row_id)
+
+
+def _iter_parquet_row_ids(path: Path) -> Iterable[str]:
+    if pa is None or pq is None:
+        raise PreparedDataHubError(
+            f"pyarrow is required to compute row_id_hash for parquet artifact: {path}"
+        )
+    parquet_file = pq.ParquetFile(str(path))
+    for record_batch in parquet_file.iter_batches(batch_size=4096, columns=["id"]):
+        table = pa.Table.from_batches([record_batch])
+        for row in table.to_pylist():
+            if not isinstance(row, Mapping):
+                continue
+            row_id = row.get("id")
+            if row_id is None:
+                raise PreparedDataHubError(f"Missing id in prepared parquet artifact: {path}")
+            yield str(row_id)
+
+
+def _dataset_file_stats(path: Path) -> tuple[str, int | None, str | None]:
+    suffix = path.suffix.lower()
+    if suffix not in {".jsonl", ".parquet"}:
+        return "other", None, None
+
+    if suffix == ".jsonl":
+        row_ids = _iter_jsonl_row_ids(path)
+        fmt = "jsonl"
+    else:
+        row_ids = _iter_parquet_row_ids(path)
+        fmt = "parquet"
+
+    row_count = 0
+    digest = hashlib.sha256()
+    for row_id in row_ids:
+        digest.update(row_id.encode("utf-8"))
+        digest.update(b"\n")
+        row_count += 1
+    return fmt, row_count, digest.hexdigest()
 
 
 def _copy_required_artifacts(*, source_dir: Path, target_dir: Path) -> list[str]:
@@ -136,16 +208,20 @@ def package_prepared_data(
     file_entries: list[dict[str, Any]] = []
     for filename in sorted(copied_files):
         path = bundle_dir / filename
+        file_format, row_count, row_id_hash = _dataset_file_stats(path)
         file_entries.append(
             {
                 "path": filename,
+                "format": file_format,
                 "size_bytes": path.stat().st_size,
                 "sha256": _sha256_file(path),
+                "row_count": row_count,
+                "row_id_sha256": row_id_hash,
             }
         )
 
     manifest = {
-        "schema_version": 1,
+        "schema_version": 2,
         "bundle_tag": bundle_tag,
         "created_at_utc": datetime.now(timezone.utc).isoformat(),
         "config_path": config_path,

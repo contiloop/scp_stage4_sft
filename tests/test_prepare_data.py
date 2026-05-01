@@ -54,6 +54,9 @@ def test_prepare_data_writes_expected_artifacts(tmp_path: Path) -> None:
             assert path.exists(), f"missing artifact: {path}"
         if importlib.util.find_spec("pyarrow") is not None:
             assert (out_dir / "datapool.normalized.parquet").exists()
+            assert (out_dir / "datapool.train.parquet").exists()
+            assert (out_dir / "datapool.eval.parquet").exists()
+            assert (out_dir / "datapool.train.sampled.parquet").exists()
 
         normalized_rows = read_jsonl(out_dir / "datapool.normalized.jsonl")
         train_rows = read_jsonl(out_dir / "datapool.train.jsonl")

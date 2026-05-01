@@ -26,11 +26,28 @@ def _write_text(path: Path, text: str) -> None:
     path.write_text(text, encoding="utf-8")
 
 
+def _write_parquet_rows(path: Path, rows: list[dict[str, object]]) -> None:
+    parquet = pytest.importorskip("pyarrow.parquet")
+    pyarrow = pytest.importorskip("pyarrow")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    table = pyarrow.Table.from_pylist(rows)
+    parquet.write_table(table, path)
+
+
 def test_package_prepared_data_writes_bundle_manifest_and_config_artifacts(tmp_path: Path) -> None:
     source_dir = tmp_path / "artifacts" / "data"
-    _write_text(source_dir / "datapool.normalized.jsonl", "{}\n")
-    _write_text(source_dir / "datapool.train.jsonl", "{}\n")
-    _write_text(source_dir / "datapool.eval.jsonl", "{}\n")
+    _write_parquet_rows(
+        source_dir / "datapool.normalized.parquet",
+        [{"id": "n-1", "source": "a"}, {"id": "n-2", "source": "b"}],
+    )
+    _write_parquet_rows(
+        source_dir / "datapool.train.parquet",
+        [{"id": "t-1", "source": "a"}],
+    )
+    _write_parquet_rows(
+        source_dir / "datapool.eval.parquet",
+        [{"id": "e-1", "source": "b"}],
+    )
     _write_text(source_dir / "prepare_data_summary.json", "{}\n")
 
     result = package_prepared_data(
@@ -46,20 +63,27 @@ def test_package_prepared_data_writes_bundle_manifest_and_config_artifacts(tmp_p
     assert (bundle_dir / "effective_config.yaml").exists()
     assert (bundle_dir / "config_hash.txt").exists()
     assert (bundle_dir / "prepared_manifest.json").exists()
-    assert (bundle_dir / "datapool.normalized.jsonl").exists()
-    assert (bundle_dir / "datapool.train.jsonl").exists()
-    assert (bundle_dir / "datapool.eval.jsonl").exists()
+    assert (bundle_dir / "datapool.normalized.parquet").exists()
+    assert (bundle_dir / "datapool.train.parquet").exists()
+    assert (bundle_dir / "datapool.eval.parquet").exists()
     assert (bundle_dir / "prepare_data_summary.json").exists()
 
     manifest = json.loads((bundle_dir / "prepared_manifest.json").read_text(encoding="utf-8"))
     assert manifest["bundle_tag"] == "unit-v1"
     assert manifest["config_hash"] == result["config_hash"]
     assert sorted(entry["path"] for entry in manifest["files"]) == [
-        "datapool.eval.jsonl",
-        "datapool.normalized.jsonl",
-        "datapool.train.jsonl",
+        "datapool.eval.parquet",
+        "datapool.normalized.parquet",
+        "datapool.train.parquet",
         "prepare_data_summary.json",
     ]
+    by_path = {entry["path"]: entry for entry in manifest["files"]}
+    assert by_path["datapool.train.parquet"]["format"] == "parquet"
+    assert by_path["datapool.train.parquet"]["row_count"] == 1
+    assert isinstance(by_path["datapool.train.parquet"]["row_id_sha256"], str)
+    assert by_path["prepare_data_summary.json"]["format"] == "other"
+    assert by_path["prepare_data_summary.json"]["row_count"] is None
+    assert by_path["prepare_data_summary.json"]["row_id_sha256"] is None
     assert (bundle_dir / "config_hash.txt").read_text(encoding="utf-8").strip() == result[
         "config_hash"
     ]
@@ -127,9 +151,18 @@ def test_restore_prepared_data_from_hub_restores_required_files(monkeypatch, tmp
     target_subdir = "prepared/v1"
     source_bundle = local_download_dir / target_subdir
 
-    _write_text(source_bundle / "datapool.normalized.jsonl", "n\n")
-    _write_text(source_bundle / "datapool.train.jsonl", "t\n")
-    _write_text(source_bundle / "datapool.eval.jsonl", "e\n")
+    _write_parquet_rows(
+        source_bundle / "datapool.normalized.parquet",
+        [{"id": "n-1", "source": "n"}],
+    )
+    _write_parquet_rows(
+        source_bundle / "datapool.train.parquet",
+        [{"id": "t-1", "source": "t"}],
+    )
+    _write_parquet_rows(
+        source_bundle / "datapool.eval.parquet",
+        [{"id": "e-1", "source": "e"}],
+    )
     _write_text(source_bundle / "prepare_data_summary.json", "{\"ok\":true}\n")
     _write_text(source_bundle / "effective_config.yaml", "run:\n  run_id: test\n")
     _write_text(source_bundle / "config_hash.txt", "abc\n")
@@ -154,14 +187,14 @@ def test_restore_prepared_data_from_hub_restores_required_files(monkeypatch, tmp
     )
 
     assert result["restored_files"] == [
-        "datapool.eval.jsonl",
-        "datapool.normalized.jsonl",
-        "datapool.train.jsonl",
+        "datapool.eval.parquet",
+        "datapool.normalized.parquet",
+        "datapool.train.parquet",
         "prepare_data_summary.json",
     ]
-    assert (output_dir / "datapool.normalized.jsonl").read_text(encoding="utf-8") == "n\n"
-    assert (output_dir / "datapool.train.jsonl").read_text(encoding="utf-8") == "t\n"
-    assert (output_dir / "datapool.eval.jsonl").read_text(encoding="utf-8") == "e\n"
+    assert (output_dir / "datapool.normalized.parquet").exists()
+    assert (output_dir / "datapool.train.parquet").exists()
+    assert (output_dir / "datapool.eval.parquet").exists()
     assert (output_dir / "prepare_data_summary.json").exists()
     assert (output_dir / "effective_config.yaml").exists()
     assert (output_dir / "config_hash.txt").exists()

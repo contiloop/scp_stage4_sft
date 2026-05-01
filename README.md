@@ -75,13 +75,21 @@ make prepare-data CONFIG=configs/scp_stage4_real.yaml
 
 This packages and uploads:
 
-- `datapool.normalized.jsonl`
-- `datapool.train.jsonl`
-- `datapool.eval.jsonl`
+- `datapool.normalized.parquet`
+- `datapool.train.parquet`
+- `datapool.eval.parquet`
 - `prepare_data_summary.json`
 - `effective_config.yaml`
 - `config_hash.txt`
 - `prepared_manifest.json`
+
+Optional compatibility artifacts during migration:
+
+- `datapool.normalized.jsonl`
+- `datapool.train.jsonl`
+- `datapool.eval.jsonl`
+- `datapool.train.sampled.parquet`
+- `datapool.train.sampled.jsonl`
 
 ```sh
 DATASET_REPO="<org_or_user>/scp-stage4-prepared"
@@ -114,7 +122,7 @@ make download-prepared-data \
   HF_DATASET_REVISION="${BUNDLE_TAG}"
 ```
 
-Then start directly from subset/stage execution:
+Then start directly from subset/stage execution (parquet-first, jsonl fallback):
 
 ```sh
 make run-subset-real-from-prepared RUN_ID=real_subset_001

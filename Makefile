@@ -304,7 +304,7 @@ run-stage-real: prepare-data
 
 # Target: run-subset-real-from-prepared
 # required config keys: same as run-subset-real
-# input artifacts: artifacts/data/datapool.train*.jsonl restored from prepared bundle
+# input artifacts: artifacts/data/datapool.train*.parquet restored from prepared bundle (jsonl fallback allowed)
 # output artifacts: full subset artifact chain under artifacts/runs/$(RUN_ID)
 # runtime: subprocess backends for inference/QE/API/training
 # exit behavior: 0 on successful subset completion; non-zero with structured failure logs
@@ -313,7 +313,7 @@ run-subset-real-from-prepared:
 
 # Target: run-stage-real-from-prepared
 # required config keys: same as run-stage-real
-# input artifacts: artifacts/data/datapool.train*.jsonl restored from prepared bundle
+# input artifacts: artifacts/data/datapool.train*.parquet restored from prepared bundle (jsonl fallback allowed)
 # output artifacts: run_stage_summary.json + per-subset artifacts
 # runtime: subprocess backends for inference/QE/API/training
 # exit behavior: 0 when all subsets complete; non-zero on first contract/runtime failure
@@ -322,7 +322,7 @@ run-stage-real-from-prepared:
 
 # Target: pack-prepared-data
 # required config keys: full data preparation config used for this datapool
-# input artifacts: artifacts/data/{datapool.normalized.jsonl,datapool.train.jsonl,datapool.eval.jsonl,prepare_data_summary.json}
+# input artifacts: artifacts/data/{datapool.normalized.parquet,datapool.train.parquet,datapool.eval.parquet,prepare_data_summary.json}
 # output artifacts: artifacts/prepared_data_bundles/<tag>/ + manifest/effective_config/config_hash
 # runtime: local CPU only
 # exit behavior: 0 on successful bundle creation; non-zero on missing artifacts/config mismatch
@@ -362,7 +362,7 @@ upload-prepared-data:
 # Target: download-prepared-data
 # required config keys: none (uses HF dataset path/revision)
 # input artifacts: HF dataset bundle path containing required prepared artifacts
-# output artifacts: artifacts/data/*.jsonl + prepare_data_summary.json + effective_config/config_hash/manifest
+# output artifacts: artifacts/data/*.parquet (+ optional *.jsonl) + prepare_data_summary.json + effective_config/config_hash/manifest
 # runtime: network + HF token for private repos
 # exit behavior: 0 on successful restore; non-zero on repo/path/revision mismatches
 download-prepared-data:

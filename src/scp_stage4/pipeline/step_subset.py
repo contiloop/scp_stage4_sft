@@ -22,6 +22,13 @@ from scp_stage4.data import read_jsonl, validate_row_id_preservation, write_json
 from scp_stage4.logging import LocalJsonlLogger, RequiredLogContext
 from scp_stage4.schema import QeIsolationRequest, QeIsolationResponse, validate_artifact_rows
 
+try:
+    import pyarrow as pa  # type: ignore
+    import pyarrow.parquet as pq  # type: ignore
+except Exception:
+    pa = None  # type: ignore[assignment]
+    pq = None  # type: ignore[assignment]
+
 
 class StepSubsetError(RuntimeError):
     """Raised when a stepwise subset contract fails."""
@@ -71,6 +78,32 @@ def _write_artifact(
     normalized = validate_artifact_rows(rows, artifact_name)
     write_jsonl(path, normalized, ensure_ascii=False)
     return normalized
+
+
+def _iter_parquet_mapping_rows(path: Path, *, batch_size: int = 4096) -> list[dict[str, Any]]:
+    if pa is None or pq is None:
+        return []
+    parquet_file = pq.ParquetFile(str(path))
+    rows: list[dict[str, Any]] = []
+    for record_batch in parquet_file.iter_batches(batch_size=max(1, int(batch_size))):
+        table = pa.Table.from_batches([record_batch])
+        for row in table.to_pylist():
+            if isinstance(row, Mapping):
+                rows.append(dict(row))
+    return rows
+
+
+def _load_prepared_rows(path: Path) -> list[dict[str, Any]]:
+    try:
+        if path.suffix.lower() == ".parquet":
+            rows = _iter_parquet_mapping_rows(path)
+        else:
+            rows = _as_rows(read_jsonl(path))
+    except Exception as exc:
+        raise StepSubsetError(f"failed to load prepared rows from {path}: {exc}") from exc
+    if not rows:
+        return []
+    return validate_artifact_rows(rows, "normalized")
 
 
 def _load_fixture_rows() -> list[dict[str, Any]]:
@@ -779,13 +812,15 @@ def _materialize_input_rows(
     if use_prepared_data:
         prepared_candidates = []
         if use_sampled_data:
+            prepared_candidates.append(Path("artifacts/data/datapool.train.sampled.parquet"))
             prepared_candidates.append(Path("artifacts/data/datapool.train.sampled.jsonl"))
+        prepared_candidates.append(Path("artifacts/data/datapool.train.parquet"))
         prepared_candidates.append(Path("artifacts/data/datapool.train.jsonl"))
         for candidate in prepared_candidates:
             if candidate.exists():
-                loaded = _as_rows(read_jsonl(candidate))
+                loaded = _load_prepared_rows(candidate)
                 if loaded:
-                    pool_rows = validate_artifact_rows(loaded, "normalized")
+                    pool_rows = loaded
                     break
 
     if use_prepared_data and not pool_rows:
@@ -2006,13 +2041,15 @@ def run_subset(
 def _prepared_train_rows(use_sampled_data: bool) -> list[dict[str, Any]]:
     candidates = []
     if use_sampled_data:
+        candidates.append(Path("artifacts/data/datapool.train.sampled.parquet"))
         candidates.append(Path("artifacts/data/datapool.train.sampled.jsonl"))
+    candidates.append(Path("artifacts/data/datapool.train.parquet"))
     candidates.append(Path("artifacts/data/datapool.train.jsonl"))
     for path in candidates:
         if path.exists():
-            rows = _as_rows(read_jsonl(path))
+            rows = _load_prepared_rows(path)
             if rows:
-                return validate_artifact_rows(rows, "normalized")
+                return rows
     return []
 
 

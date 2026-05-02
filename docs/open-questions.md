@@ -99,7 +99,7 @@ Current baseline:
 
 ```yaml
 model.max_length: 8192
-data.length.max_source_tokens: 4000
+data.length.max_source_tokens: 3900
 data.length.max_output_tokens: 4096
 data.length.min_available_output_tokens: 768
 ```

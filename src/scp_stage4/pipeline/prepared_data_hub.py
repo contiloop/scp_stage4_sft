@@ -27,12 +27,16 @@ _REQUIRED_FILES = (
     "datapool.eval.parquet",
     "prepare_data_summary.json",
 )
-_OPTIONAL_FILES = (
+_OPTIONAL_PACK_FILES = (
     "datapool.normalized.jsonl",
     "datapool.train.jsonl",
     "datapool.eval.jsonl",
     "datapool.train.sampled.parquet",
     "datapool.train.sampled.jsonl",
+    "ood_test.jsonl",
+)
+_OPTIONAL_RESTORE_FILES = (
+    "datapool.train.sampled.parquet",
     "ood_test.jsonl",
 )
 
@@ -131,7 +135,7 @@ def _copy_required_artifacts(*, source_dir: Path, target_dir: Path) -> list[str]
             "Missing required prepared-data artifacts: " + ", ".join(sorted(missing))
         )
 
-    for name in _OPTIONAL_FILES:
+    for name in _OPTIONAL_PACK_FILES:
         source_path = source_dir / name
         if not source_path.exists():
             continue
@@ -379,7 +383,7 @@ def restore_prepared_data_from_hub(
             "Downloaded bundle is missing required files: " + ", ".join(sorted(missing_required))
         )
 
-    for name in _OPTIONAL_FILES:
+    for name in _OPTIONAL_RESTORE_FILES:
         source_file = bundle_dir / name
         if source_file.exists():
             _copy_if_exists(source_file, output_path / name)

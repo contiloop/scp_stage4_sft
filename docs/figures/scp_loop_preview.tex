@@ -1,0 +1,17 @@
+% Standalone preview wrapper for figures/scp_loop.tex
+% Compile with:  pdflatex scp_loop_preview.tex
+
+\documentclass[border=6pt]{standalone}
+\usepackage{amsmath}
+\usepackage{tikz}
+\usetikzlibrary{positioning, arrows.meta, calc, fit, backgrounds}
+
+\makeatletter
+\renewenvironment{figure*}[1][]{}{}
+\renewcommand{\caption}[1]{}
+\renewcommand{\label}[1]{}
+\makeatother
+
+\begin{document}
+\input{scp_loop.tex}
+\end{document}

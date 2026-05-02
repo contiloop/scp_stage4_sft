@@ -303,7 +303,7 @@ data:
     mode: tokenizer
 
     max_total_tokens: 8192
-    max_source_tokens: 4000
+    max_source_tokens: 3900
     max_output_tokens: 4096
     min_available_output_tokens: 768
 
@@ -313,7 +313,7 @@ data:
 
     split:
       unit: sentence
-      max_source_tokens_per_chunk: 4000
+      max_source_tokens_per_chunk: 3900
       max_chunks_per_row: 4
       min_chunk_tokens: 32
       fallback_for_long_sentence: skip
@@ -362,7 +362,7 @@ available_output_budget = 8192 - 120 - 4000 - 64 = 4008
 effective_max_new_tokens = min(4096, 4096, 4008) = 4008
 ```
 
-The baseline `max_source_tokens: 4000` preserves more financial/news context while still requiring at least `min_available_output_tokens: 768` of possible output room under an `8192` token total budget.
+The baseline `max_source_tokens: 3900` preserves more financial/news context while still requiring at least `min_available_output_tokens: 768` of possible output room under an `8192` token total budget.
 
 If a row needs the full `max_output_tokens: 4096`, its source budget is lower:
 
@@ -584,6 +584,7 @@ data:
   num_workers: 4
   length:
     tokenizer_batch_size: 16384
+    tokenizer_fallback: error
 ```
 
 Rules:
@@ -873,8 +874,9 @@ data:
     enabled: true
     mode: tokenizer
     tokenizer_batch_size: 16384
+    tokenizer_fallback: error
     max_total_tokens: 8192
-    max_source_tokens: 4000
+    max_source_tokens: 3900
     max_output_tokens: 4096
     min_available_output_tokens: 768
     safety_margin_tokens: 64
@@ -882,7 +884,7 @@ data:
     output_budget_strategy: dynamic
     split:
       unit: sentence
-      max_source_tokens_per_chunk: 4000
+      max_source_tokens_per_chunk: 3900
       max_chunks_per_row: 4
       min_chunk_tokens: 32
       fallback_for_long_sentence: skip

@@ -122,7 +122,9 @@ make download-prepared-data \
   HF_DATASET_REVISION="${BUNDLE_TAG}"
 ```
 
-Then start directly from subset/stage execution (parquet-first, jsonl fallback):
+This restore path materializes parquet datapool artifacts (`train/eval/normalized`) for execution.
+
+Then start directly from subset/stage execution (parquet-first):
 
 ```sh
 make run-subset-real-from-prepared RUN_ID=real_subset_001

@@ -163,6 +163,9 @@ def test_restore_prepared_data_from_hub_restores_required_files(monkeypatch, tmp
         source_bundle / "datapool.eval.parquet",
         [{"id": "e-1", "source": "e"}],
     )
+    _write_text(source_bundle / "datapool.train.jsonl", '{"id":"legacy-jsonl"}\n')
+    _write_text(source_bundle / "datapool.eval.jsonl", '{"id":"legacy-jsonl"}\n')
+    _write_text(source_bundle / "datapool.normalized.jsonl", '{"id":"legacy-jsonl"}\n')
     _write_text(source_bundle / "prepare_data_summary.json", "{\"ok\":true}\n")
     _write_text(source_bundle / "effective_config.yaml", "run:\n  run_id: test\n")
     _write_text(source_bundle / "config_hash.txt", "abc\n")
@@ -195,6 +198,9 @@ def test_restore_prepared_data_from_hub_restores_required_files(monkeypatch, tmp
     assert (output_dir / "datapool.normalized.parquet").exists()
     assert (output_dir / "datapool.train.parquet").exists()
     assert (output_dir / "datapool.eval.parquet").exists()
+    assert not (output_dir / "datapool.normalized.jsonl").exists()
+    assert not (output_dir / "datapool.train.jsonl").exists()
+    assert not (output_dir / "datapool.eval.jsonl").exists()
     assert (output_dir / "prepare_data_summary.json").exists()
     assert (output_dir / "effective_config.yaml").exists()
     assert (output_dir / "config_hash.txt").exists()

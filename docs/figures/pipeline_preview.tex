@@ -1,0 +1,19 @@
+% Standalone preview wrapper for figures/pipeline.tex
+% Compile with:  pdflatex pipeline_preview.tex
+% Output:        pipeline_preview.pdf  (cropped to figure)
+
+\documentclass[border=6pt]{standalone}
+\usepackage{amsmath}
+\usepackage{tikz}
+\usetikzlibrary{positioning, arrows.meta, calc, fit, backgrounds}
+
+% Strip figure*/caption/label wrapping so \input works inside standalone.
+\makeatletter
+\renewenvironment{figure*}[1][]{}{}
+\renewcommand{\caption}[1]{}
+\renewcommand{\label}[1]{}
+\makeatother
+
+\begin{document}
+\input{pipeline.tex}
+\end{document}

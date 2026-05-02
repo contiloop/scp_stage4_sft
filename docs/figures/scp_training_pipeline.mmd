@@ -1,0 +1,48 @@
+flowchart LR
+  datapool["Datapool<br/>English sources<br/>stable row ids"]
+  subset["Subset i<br/>deterministic slice<br/>input.jsonl"]
+  base["Base model<br/>M_i<br/>clean state"]
+  q1["Q1 inference<br/>base output<br/>mt_q1, qe_q1"]
+  lora["Weak LoRA<br/>train on Q1<br/>pseudo-labels"]
+  q2["Q2 inference<br/>with collapse<br/>mt_q2, qe_q2"]
+  score["Score S_i<br/>Q1 vs Q2 drop"]
+  select["Select rows<br/>fragile samples"]
+  clean["Clean base<br/>unload LoRA"]
+  api["External LLM<br/>gold correction"]
+  update["Base update<br/>Unsloth SFT"]
+  next["Updated base<br/>M_{i+1}"]
+  eval["OOD eval<br/>reference metrics"]
+
+  datapool --> subset --> base --> q1 --> lora --> q2 --> score --> select
+  select --> clean --> api --> update --> next --> eval
+  next -. "next subset" .-> subset
+
+  subgraph probe["Temporary self-collapse probe"]
+    q1
+    lora
+    q2
+    score
+    select
+  end
+
+  subgraph persistent["Persistent correction and update path"]
+    clean
+    api
+    update
+    next
+    eval
+  end
+
+  classDef data fill:#eef2f5,stroke:#596674,stroke-width:1.4px,color:#111827;
+  classDef model fill:#e8f1fb,stroke:#2463a6,stroke-width:1.4px,color:#111827;
+  classDef probeBox fill:#fff1df,stroke:#c56a1a,stroke-width:1.4px,color:#111827;
+  classDef guard fill:#fff8d8,stroke:#a97900,stroke-width:1.4px,color:#111827;
+  classDef apiBox fill:#e9f6ee,stroke:#2d7d46,stroke-width:1.4px,color:#111827;
+  classDef evalBox fill:#f3eefa,stroke:#6f4aa3,stroke-width:1.4px,color:#111827;
+
+  class datapool,subset data;
+  class base,q1,next model;
+  class lora,q2,score probeBox;
+  class select,clean guard;
+  class api,update apiBox;
+  class eval evalBox;

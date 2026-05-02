@@ -792,7 +792,7 @@ def _build_token_counter(cfg: Mapping[str, Any]) -> _TokenCounter:
     if not isinstance(model_cfg, Mapping):
         model_cfg = {}
     tokenizer_name = length_cfg.get("tokenizer_name") or model_cfg.get("name")
-    fallback = str(length_cfg.get("tokenizer_fallback", "whitespace"))
+    fallback = str(length_cfg.get("tokenizer_fallback", "error"))
     local_files_only = bool(length_cfg.get("tokenizer_local_files_only", False))
     trust_remote_code = bool(model_cfg.get("trust_remote_code", False))
 

@@ -310,7 +310,7 @@ def validate_config(cfg: dict[str, Any]) -> None:
             errors,
             "data.length.overflow must be one of: split, skip, truncate",
         )
-    tokenizer_fallback = length_cfg.get("tokenizer_fallback", "whitespace")
+    tokenizer_fallback = length_cfg.get("tokenizer_fallback", "error")
     if tokenizer_fallback not in {"whitespace", "error"}:
         _err(errors, "data.length.tokenizer_fallback must be 'whitespace' or 'error'")
     tokenizer_batch_size = length_cfg.get("tokenizer_batch_size", 512)

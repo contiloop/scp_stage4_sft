@@ -192,8 +192,9 @@ data:
     enabled: true
     mode: tokenizer
     tokenizer_batch_size: 16384
+    tokenizer_fallback: error
     max_total_tokens: 8192
-    max_source_tokens: 4000
+    max_source_tokens: 3900
     max_output_tokens: 4096
     prompt_template_tokens: 256
     min_available_output_tokens: 768

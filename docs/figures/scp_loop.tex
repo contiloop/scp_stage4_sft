@@ -1,0 +1,104 @@
+% SCP single-subset loop figure
+% (Q1 -> collapse LoRA -> Q2 -> QE/select -> unload -> external API -> update -> back to M_t)
+%
+% Required preamble:
+%   \usepackage{amsmath}
+%   \usepackage{tikz}
+%   \usetikzlibrary{positioning, arrows.meta, calc, fit, backgrounds}
+%
+% Usage:
+%   \input{figures/scp_loop.tex}
+
+\begin{figure*}[t]
+\centering
+\resizebox{0.95\textwidth}{!}{%
+\begin{tikzpicture}[
+  font=\sffamily\small,
+  >={Stealth[length=2.6mm,width=2mm]},
+  node distance=10mm and 14mm,
+  block/.style={
+    draw, rounded corners=1.5pt, align=center,
+    minimum height=14mm, minimum width=30mm,
+    inner sep=4pt, line width=0.5pt
+  },
+  model/.style={block, fill=gray!10,    draw=gray!60},
+  infer/.style={block, fill=orange!14,  draw=orange!70},
+  lora/.style ={block, fill=red!10,     draw=red!60, dashed},
+  qe/.style   ={block, fill=yellow!22,  draw=yellow!70!black},
+  api/.style  ={block, fill=violet!10,  draw=violet!60},
+  upd/.style  ={block, fill=red!18,     draw=red!70},
+  arr/.style={->, line width=0.55pt},
+  iter/.style={->, line width=0.9pt, dashed, red!65!black},
+  steplabel/.style={font=\scriptsize\itshape, gray!50!black}
+]
+
+% ============ Top lane: probe & generate (left -> right), 4 nodes ============
+\node[model]                 (mt)    {Base model $M_t$\\\scriptsize subset $i$ input};
+\node[infer, right=of mt]    (q1)    {\textbf{$Q_1$ Inference}\\\scriptsize sample with $T{=}1.1$\\\scriptsize $\to$ \texttt{mt\_q1}};
+\node[lora,  right=of q1]    (train) {\textbf{Collapse LoRA}\\\textbf{Training}\\\scriptsize SFT on $(x,\,\texttt{mt\_q1})$\\\scriptsize as pseudo-labels};
+\node[infer, right=of train] (q2)    {\textbf{$Q_2$ Inference}\\\scriptsize $M_t{+}\text{LoRA}$, greedy\\\scriptsize $\to$ \texttt{mt\_q2}};
+
+\draw[arr] (mt)    -- (q1);
+\draw[arr] (q1)    -- (train);
+\draw[arr] (train) -- (q2);
+
+\node[steplabel, above=0.5mm] at ($(mt.east)!0.5!(q1.west)$)    {(1)};
+\node[steplabel, above=0.5mm] at ($(q1.east)!0.5!(train.west)$) {(2)};
+\node[steplabel, above=0.5mm] at ($(train.east)!0.5!(q2.west)$) {(3)};
+
+% ============ Bottom lane: score, correct, update (right -> left), 4 nodes ============
+% Aligned to top columns: score|update|q2|extapi etc.
+\node[qe,   below=22mm of q2]    (score)  {\textbf{QE \& Select}\\\scriptsize $S_i = f(Q_1,Q_2)$\\\scriptsize MetricX / COMET-Kiwi\\\scriptsize fragile $\Leftrightarrow S_i {<} \tau$};
+\node[lora, below=22mm of train] (unload) {\textbf{Unload}\\\textbf{Collapse LoRA}\\\scriptsize restore clean $M_t$};
+\node[api,  below=22mm of q1]    (extapi) {\textbf{External LLM}\\\textbf{correction}\\\scriptsize correction-style\\\scriptsize on \texttt{mt\_q1}};
+\node[upd,  below=22mm of mt]    (update) {\textbf{Update base}\\\scriptsize SFT on corrected\\\scriptsize $(x, y^{*})$ pairs};
+
+% Vertical bridge: q2 -> score
+\draw[arr] (q2.south) -- node[steplabel, right=1mm] {(4)} (score.north);
+
+\draw[arr] (score)  -- node[steplabel, above=0.5mm] {(5)} (unload);
+\draw[arr] (unload) -- node[steplabel, above=0.5mm] {(6)} (extapi);
+\draw[arr] (extapi) -- node[steplabel, above=0.5mm] {(7)} (update);
+
+% Iteration arrow: update -> M_t (in-place update for next subset)
+\draw[iter] (update.north) -- node[font=\scriptsize, red!65!black, left=1mm, align=center]
+   {(8) update\\applied to $M_t$} (mt.south);
+
+% ============ Side annotations ============
+\node[font=\scriptsize\itshape, red!60!black, align=center,
+      above=1mm of train] {temporary probe};
+\node[font=\scriptsize\itshape, violet!50!black, align=center,
+      below=1mm of extapi] {only fragile rows};
+
+% Phase brackets above/below
+\node[font=\bfseries\small, above=10mm of train, align=center]
+  (probelabel) {Probe \& generate phase \scriptsize(temporary self-collapse adapter)};
+\node[font=\bfseries\small, below=10mm of extapi, align=center]
+  (correctlabel) {Score, correct \& update phase \scriptsize(clean base only)};
+
+% ============ Phase frames ============
+\begin{scope}[on background layer]
+  \node[draw=orange!45, dashed, rounded corners=2pt,
+        fit=(mt)(q1)(train)(q2), inner sep=5mm] {};
+  \node[draw=violet!45, dashed, rounded corners=2pt,
+        fit=(score)(unload)(extapi)(update), inner sep=5mm] {};
+\end{scope}
+
+\end{tikzpicture}%
+}
+\caption{\textbf{One subset of the SCP loop.}
+Steps (1)--(3) are the \emph{probe \& generate phase}: the current base
+model $M_t$ first generates Korean translations under high-temperature
+sampling ($Q_1$, $T{=}1.1$). A \emph{temporary} collapse LoRA is then
+SFT-trained on $(x,\,\texttt{mt\_q1})$ as pseudo-labels and applied to
+regenerate deterministic outputs ($Q_2$).
+Steps (4)--(8) are the \emph{score, correct \& update phase}: a
+reference-free QE score $S_i = f(Q_1, Q_2)$ measures both baseline
+difficulty and collapse sensitivity, and samples below threshold $\tau$ are
+flagged as fragile; the collapse LoRA is unloaded so subsequent stages run
+on a clean base; only the fragile samples are sent to the external LLM for
+correction-style relabelling; the base model is then SFT-updated in place
+on the corrected pairs $(x, y^{*})$, and the same $M_t$ slot becomes the
+input for the next subset.}
+\label{fig:scp-loop}
+\end{figure*}

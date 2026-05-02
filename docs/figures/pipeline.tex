@@ -1,0 +1,127 @@
+% SCP Stage 4 SFT pipeline figure (full: data prep + SCP loop + OOD eval)
+%
+% Required preamble in your paper:
+%   \usepackage{amsmath}
+%   \usepackage{tikz}
+%   \usetikzlibrary{positioning, arrows.meta, calc, fit, backgrounds}
+%
+% Usage:
+%   \input{figures/pipeline.tex}
+
+\begin{figure*}[t]
+\centering
+\resizebox{\textwidth}{!}{%
+\begin{tikzpicture}[
+  font=\sffamily\small,
+  >={Stealth[length=2.4mm,width=1.8mm]},
+  node distance=8mm and 11mm,
+  block/.style={
+    draw, rounded corners=1.5pt, align=center,
+    minimum height=12mm, minimum width=24mm,
+    inner sep=3pt, line width=0.45pt
+  },
+  data/.style ={block, fill=blue!8,    draw=blue!50},
+  infer/.style={block, fill=orange!14, draw=orange!70},
+  lora/.style ={block, fill=red!10,    draw=red!60, dashed},
+  qe/.style   ={block, fill=yellow!22, draw=yellow!70!black},
+  api/.style  ={block, fill=violet!10, draw=violet!60},
+  upd/.style  ={block, fill=red!18,    draw=red!70},
+  eval/.style ={block, fill=green!12,  draw=green!55!black},
+  artifact/.style={
+    draw=gray!50, fill=gray!4, rounded corners=1pt,
+    align=center, font=\scriptsize\ttfamily,
+    inner sep=3pt, minimum width=24mm
+  },
+  arr/.style={->, line width=0.5pt},
+  iter/.style={->, line width=0.85pt, dashed, red!65!black},
+  evalarr/.style={->, line width=0.6pt, green!45!black},
+  stagelabel/.style={font=\bfseries\small, align=center}
+]
+
+% ============ Stage A: Data Preparation (top-left, horizontal) ============
+\node[data]                (hf)    {HF Datasets\\\scriptsize Reuters $\cdot$ C4\\\scriptsize Bloomberg $\cdot$ Earnings\\\scriptsize SEC-10K};
+\node[data, right=of hf]   (norm)  {Normalize\\\scriptsize tokenizer-aware\\\scriptsize length split};
+\node[data, right=of norm] (split) {Train/Eval\\Split\\\scriptsize seed=42};
+
+\draw[arr] (hf) -- (norm);
+\draw[arr] (norm) -- (split);
+
+% Artifact box below norm (kept clear of Stage B's bottom row)
+\node[artifact, below=18mm of norm] (artA)
+  {datapool.train.jsonl\\datapool.eval.jsonl\\ood\_test.jsonl};
+\draw[->, dotted, gray] (split.south) .. controls +(0,-0.6) and +(1.2,0) .. (artA.east);
+
+% ============ Stage B: SCP loop (U-shape, 4:4) ============
+% Top lane: subset -> Q1 -> CollapseLoRA -> Q2
+\node[data,  right=14mm of split] (subset) {Subset $i$\\\scriptsize fraction=0.02\\\scriptsize uses base $M_t$};
+\node[infer, right=of subset]     (q1)     {$Q_1$ Inference\\\scriptsize $M_t$, $T{=}1.1$\\\scriptsize $\to$ \texttt{mt\_q1}};
+\node[lora,  right=of q1]         (train)  {Collapse LoRA\\Training\\\scriptsize SFT on \texttt{mt\_q1}\\\scriptsize as pseudo-labels};
+\node[infer, right=of train]      (q2)     {$Q_2$ Inference\\\scriptsize $M_t{+}\text{LoRA}$\\\scriptsize greedy};
+
+\draw[arr] (split)  -- (subset);
+\draw[arr] (subset) -- (q1);
+\draw[arr] (q1)     -- (train);
+\draw[arr] (train)  -- (q2);
+
+% Bottom lane: Update <- External LLM <- Unload <- QE & Select
+\node[qe,   below=22mm of q2]    (score)  {QE \& Select\\\scriptsize $S_i = f(Q_1,Q_2)$\\\scriptsize MetricX / COMET-Kiwi\\\scriptsize fragile $\Leftrightarrow S_i {<} \tau$};
+\node[lora, below=22mm of train] (unload) {Unload\\Collapse LoRA\\\scriptsize restore clean $M_t$};
+\node[api,  below=22mm of q1]    (extapi) {External LLM\\correction\\\scriptsize correction-style\\\scriptsize on \texttt{mt\_q1}};
+\node[upd,  below=22mm of subset](update) {Update base\\\scriptsize SFT on $(x, y^{*})$\\\scriptsize in place};
+
+% Right vertical: Q2 -> QE & Select
+\draw[arr] (q2.south) -- (score.north);
+
+% Bottom right -> left
+\draw[arr] (score)  -- (unload);
+\draw[arr] (unload) -- (extapi);
+\draw[arr] (extapi) -- (update);
+
+% Left vertical: Update -> Subset (iteration; in-place model update)
+\draw[iter] (update.north) --
+  node[font=\scriptsize, red!65!black, left=1mm, align=center]
+       {next subset\\(updated $M_t$)} (subset.south);
+
+% ============ Stage C: OOD Evaluation (below Stage B, horizontal) ============
+\node[eval, below=18mm of update] (ood)    {OOD Translate\\\scriptsize Source\_En $\to$ hyp};
+\node[eval, right=of ood]         (metric) {MetricX-24 ref\\BLEU $\cdot$ chrF};
+\node[eval, right=of metric]      (wb)     {W\&B log\\\scriptsize axis: subset\_idx};
+
+\draw[evalarr] (update.south) --
+  node[font=\scriptsize, green!45!black, right=1mm, align=center]
+       {after each\\subset} (ood.north);
+\draw[arr] (ood)    -- (metric);
+\draw[arr] (metric) -- (wb);
+
+% ============ Stage frames + labels above frames ============
+\begin{scope}[on background layer]
+  \node[draw=blue!35, dashed, rounded corners=2pt,
+        fit=(hf)(split)(artA), inner sep=5mm] (frameA) {};
+  \node[draw=orange!50, dashed, rounded corners=2pt,
+        fit=(subset)(q2)(score)(update), inner sep=5mm] (frameB) {};
+  \node[draw=green!55!black, dashed, rounded corners=2pt,
+        fit=(ood)(wb), inner sep=5mm] (frameC) {};
+\end{scope}
+
+\node[stagelabel, above=2mm of frameA.north] {A. Data preparation};
+\node[stagelabel, above=2mm of frameB.north] {B. SCP subset loop};
+\node[stagelabel, below=2mm of frameC.south] {C. OOD evaluation};
+
+\end{tikzpicture}%
+}
+\caption{\textbf{SCP Stage 4 SFT pipeline.}
+\textbf{(A)} Monolingual English datasets are normalized with tokenizer-aware
+length splitting and partitioned into train/eval/OOD artifacts.
+\textbf{(B)} Each subset $i$ runs the SCP loop in a U-shape: along the top
+lane the current base $M_t$ first generates high-temperature $Q_1$, then a
+\emph{temporary} collapse LoRA is trained on $Q_1$ pseudo-labels and used
+for greedy $Q_2$. Along the bottom lane the reference-free QE score
+$S_i = f(Q_1, Q_2)$ selects fragile samples; the collapse LoRA is unloaded
+so the external LLM correction and the in-place SFT update of $M_t$ run on a
+clean base. The dashed arrow indicates that the updated $M_t$ feeds the next
+subset.
+\textbf{(C)} After each subset, the updated $M_t$ is evaluated on a held-out
+OOD set with reference-based MetricX-24, BLEU, and chrF, logged on the
+\texttt{subset\_idx} axis.}
+\label{fig:scp-pipeline}
+\end{figure*}

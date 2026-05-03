@@ -24,13 +24,13 @@
     "scoring": {
       "weighted_score": {
         "enabled": true,
-        "alpha": 0.3,
-        "beta": 0.7
+        "alpha": 0.15,
+        "beta": 0.85
       },
       "selection": {
         "default_rule": {
           "require_score_s_gte": 0.0,
-          "top_fraction": 0.1
+          "top_fraction": 0.01
         }
       }
     },

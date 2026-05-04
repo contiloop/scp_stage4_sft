@@ -329,6 +329,63 @@ def _copy_if_exists(source: Path, target: Path) -> None:
         shutil.copy2(source, target)
 
 
+def _write_merged_parquet_from_parts(parts: list[Path], output_path: Path) -> None:
+    if pa is None or pq is None:
+        raise PreparedDataHubError(
+            f"pyarrow is required to restore sharded prepared bundle into {output_path.name}"
+        )
+    if not parts:
+        raise PreparedDataHubError(f"no parquet parts found for {output_path.name}")
+
+    tables = []
+    for part in parts:
+        tables.append(pq.read_table(part))
+    merged = pa.concat_tables(tables, promote_options="default")
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    pq.write_table(merged, output_path)
+
+
+def _try_restore_sharded_layout(*, bundle_dir: Path, output_path: Path) -> list[str] | None:
+    """Restore from alternate bundle layout:
+    prepared/<tag>/{train,eval}/part-*.parquet + manifest.json
+    """
+    train_dir = bundle_dir / "train"
+    eval_dir = bundle_dir / "eval"
+    if not train_dir.exists() or not eval_dir.exists():
+        return None
+
+    train_parts = sorted(train_dir.glob("*.parquet"))
+    eval_parts = sorted(eval_dir.glob("*.parquet"))
+    if not train_parts or not eval_parts:
+        return None
+
+    _write_merged_parquet_from_parts(train_parts, output_path / "datapool.train.parquet")
+    _write_merged_parquet_from_parts(eval_parts, output_path / "datapool.eval.parquet")
+    # Fallback rule: normalized is unavailable in this external layout, so restore as train-equivalent.
+    shutil.copy2(output_path / "datapool.train.parquet", output_path / "datapool.normalized.parquet")
+
+    manifest_json = bundle_dir / "manifest.json"
+    summary = {
+        "restored_from_layout": "sharded_train_eval_parts",
+        "source_bundle_dir": str(bundle_dir),
+        "train_parts": len(train_parts),
+        "eval_parts": len(eval_parts),
+        "manifest_json_present": manifest_json.exists(),
+    }
+    (output_path / "prepare_data_summary.json").write_text(
+        json.dumps(summary, ensure_ascii=False, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    if manifest_json.exists():
+        _copy_if_exists(manifest_json, output_path / "prepared_manifest.json")
+    return [
+        "datapool.eval.parquet",
+        "datapool.normalized.parquet",
+        "datapool.train.parquet",
+        "prepare_data_summary.json",
+    ]
+
+
 def restore_prepared_data_from_hub(
     *,
     repo_id: str,
@@ -379,9 +436,16 @@ def restore_prepared_data_from_hub(
         _copy_if_exists(source_file, output_path / name)
         restored_files.append(name)
     if missing_required:
-        raise PreparedDataHubError(
-            "Downloaded bundle is missing required files: " + ", ".join(sorted(missing_required))
+        restored_from_sharded = _try_restore_sharded_layout(
+            bundle_dir=bundle_dir,
+            output_path=output_path,
         )
+        if restored_from_sharded is None:
+            raise PreparedDataHubError(
+                "Downloaded bundle is missing required files: "
+                + ", ".join(sorted(missing_required))
+            )
+        restored_files = restored_from_sharded
 
     for name in _OPTIONAL_RESTORE_FILES:
         source_file = bundle_dir / name

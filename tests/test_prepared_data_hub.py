@@ -212,6 +212,59 @@ def test_restore_prepared_data_from_hub_restores_required_files(monkeypatch, tmp
     assert snapshot_kwargs["revision"] == "v1"
 
 
+def test_restore_prepared_data_from_hub_supports_sharded_train_eval_layout(
+    monkeypatch, tmp_path: Path
+) -> None:
+    observed: dict[str, object] = {}
+    local_download_dir = tmp_path / "prepared_data_download"
+    target_subdir = "prepared/prepared-2026-05-01"
+    source_bundle = local_download_dir / target_subdir
+
+    _write_parquet_rows(
+        source_bundle / "train" / "part-00000.parquet",
+        [{"id": "t-1", "source": "t1"}],
+    )
+    _write_parquet_rows(
+        source_bundle / "train" / "part-00001.parquet",
+        [{"id": "t-2", "source": "t2"}],
+    )
+    _write_parquet_rows(
+        source_bundle / "eval" / "part-00000.parquet",
+        [{"id": "e-1", "source": "e1"}],
+    )
+    _write_text(source_bundle / "manifest.json", "{\"schema_version\":1}\n")
+
+    def _snapshot_download(**kwargs):
+        if "local_dir_use_symlinks" in kwargs:
+            raise TypeError("unexpected keyword argument 'local_dir_use_symlinks'")
+        observed["snapshot_kwargs"] = dict(kwargs)
+        return str(source_bundle)
+
+    fake_module = types.SimpleNamespace(snapshot_download=_snapshot_download)
+    monkeypatch.setitem(sys.modules, "huggingface_hub", fake_module)
+
+    output_dir = tmp_path / "artifacts" / "data"
+    result = restore_prepared_data_from_hub(
+        repo_id="alwaysgood/scp-stage4-dataset-trainable",
+        path_in_repo=target_subdir,
+        output_dir=output_dir,
+        revision="main",
+        local_download_dir=local_download_dir,
+    )
+
+    assert sorted(result["restored_files"]) == [
+        "datapool.eval.parquet",
+        "datapool.normalized.parquet",
+        "datapool.train.parquet",
+        "prepare_data_summary.json",
+    ]
+    assert (output_dir / "datapool.train.parquet").exists()
+    assert (output_dir / "datapool.eval.parquet").exists()
+    assert (output_dir / "datapool.normalized.parquet").exists()
+    assert (output_dir / "prepare_data_summary.json").exists()
+    assert (output_dir / "prepared_manifest.json").exists()
+
+
 def test_materialize_bundle_file_falls_back_to_copy(monkeypatch, tmp_path: Path) -> None:
     source = tmp_path / "source.jsonl"
     target = tmp_path / "target.jsonl"

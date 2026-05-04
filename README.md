@@ -92,8 +92,9 @@ Optional compatibility artifacts during migration:
 - `datapool.train.sampled.jsonl`
 
 ```sh
-DATASET_REPO="<org_or_user>/scp-stage4-prepared"
-BUNDLE_TAG="v2026-04-30-real"
+DATASET_REPO="alwaysgood/scp-stage4-dataset-trainable"
+BUNDLE_TAG="prepared-2026-05-01"
+DATASET_PATH="prepared/${BUNDLE_TAG}"
 
 make pack-prepared-data \
   CONFIG=configs/scp_stage4_real.yaml \
@@ -102,7 +103,7 @@ make pack-prepared-data \
 make upload-prepared-data \
   HF_DATASET_REPO="${DATASET_REPO}" \
   PREPARED_BUNDLE_TAG="${BUNDLE_TAG}" \
-  HF_DATASET_PATH="prepared/${BUNDLE_TAG}" \
+  HF_DATASET_PATH="${DATASET_PATH}" \
   HF_DATASET_REVISION=main \
   HF_DATASET_TAG="${BUNDLE_TAG}"
 ```
@@ -113,13 +114,14 @@ If you intentionally reuse an existing tag name, add `HF_DATASET_TAG_EXIST_OK=1`
 ### 5B. Reuse processed data on a new instance (skip prepare-data)
 
 ```sh
-DATASET_REPO="<org_or_user>/scp-stage4-prepared"
-BUNDLE_TAG="v2026-04-30-real"
+DATASET_REPO="alwaysgood/scp-stage4-dataset-trainable"
+BUNDLE_TAG="prepared-2026-05-01"
+DATASET_PATH="prepared/${BUNDLE_TAG}"
 
 make download-prepared-data \
   HF_DATASET_REPO="${DATASET_REPO}" \
-  HF_DATASET_PATH="prepared/${BUNDLE_TAG}" \
-  HF_DATASET_REVISION="${BUNDLE_TAG}"
+  HF_DATASET_PATH="${DATASET_PATH}" \
+  HF_DATASET_REVISION="main"
 ```
 
 This restore path materializes parquet datapool artifacts (`train/eval/normalized`) for execution.

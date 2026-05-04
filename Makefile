@@ -128,7 +128,7 @@ prepare-data: validate-config
 # output artifacts: subsets/subset_000/q1.jsonl (mocked)
 # runtime: local CPU only, mocked generation
 # exit behavior: 0 on deterministic mocked output path readiness; non-zero on contract failure
-infer-q1: prepare-data
+infer-q1:
 	@PYTHONPATH=$(PYTHONPATH) $(PY) -m scp_stage4.pipeline.step_subset infer-q1 --config $(CONFIG) --run-id $(RUN_ID) --subset-idx 0 --use-prepared-data $(OVERRIDES)
 
 # Target: train-collapse-lora

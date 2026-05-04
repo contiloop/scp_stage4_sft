@@ -383,6 +383,54 @@ def validate_config(cfg: dict[str, Any]) -> None:
     q2 = _as_dict(inference.get("q2", {}), "inference.q2", errors)
     _require_number(q1, "max_new_tokens", errors)
     _require_number(q2, "max_new_tokens", errors)
+    inference_runtime = _as_dict(inference.get("runtime", {}), "inference.runtime", errors)
+    unsloth_runtime = _as_dict(
+        inference_runtime.get("unsloth", {}),
+        "inference.runtime.unsloth",
+        errors,
+    )
+    unsloth_enabled = unsloth_runtime.get("enabled")
+    if unsloth_enabled is not None and not isinstance(unsloth_enabled, bool):
+        _err(errors, "inference.runtime.unsloth.enabled must be a boolean")
+    unsloth_fallback = unsloth_runtime.get("fallback_to_transformers")
+    if unsloth_fallback is not None and not isinstance(unsloth_fallback, bool):
+        _err(
+            errors,
+            "inference.runtime.unsloth.fallback_to_transformers must be a boolean",
+        )
+
+    throughput_cfg = _as_dict(inference.get("throughput", {}), "inference.throughput", errors)
+    batching_cfg = _as_dict(
+        throughput_cfg.get("batching", {}),
+        "inference.throughput.batching",
+        errors,
+    )
+    strategy = batching_cfg.get("strategy", "token_budget")
+    if strategy not in {"token_budget"}:
+        _err(errors, "inference.throughput.batching.strategy must be 'token_budget'")
+    max_batch_tokens = batching_cfg.get("max_batch_tokens", 32768)
+    if (
+        isinstance(max_batch_tokens, bool)
+        or not isinstance(max_batch_tokens, int)
+        or max_batch_tokens <= 0
+    ):
+        _err(errors, "inference.throughput.batching.max_batch_tokens must be a positive integer")
+    pad_to_multiple_of = batching_cfg.get("pad_to_multiple_of")
+    if pad_to_multiple_of is not None and (
+        isinstance(pad_to_multiple_of, bool)
+        or not isinstance(pad_to_multiple_of, int)
+        or pad_to_multiple_of <= 0
+    ):
+        _err(
+            errors,
+            "inference.throughput.batching.pad_to_multiple_of must be null or a positive integer",
+        )
+    preserve_order = throughput_cfg.get("preserve_order")
+    if preserve_order is not None and not isinstance(preserve_order, bool):
+        _err(errors, "inference.throughput.preserve_order must be a boolean")
+    restore_order = throughput_cfg.get("restore_order_in_artifacts")
+    if restore_order is not None and not isinstance(restore_order, bool):
+        _err(errors, "inference.throughput.restore_order_in_artifacts must be a boolean")
 
     subset_cfg = _as_dict(pipeline.get("subset", {}), "pipeline.subset", errors)
     strategy = subset_cfg.get("strategy")

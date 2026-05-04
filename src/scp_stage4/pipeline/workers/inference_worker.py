@@ -6,9 +6,11 @@ Transformers and optional PEFT adapters.
 
 from __future__ import annotations
 
+import math
+import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 import torch
 
@@ -29,6 +31,29 @@ class _ModelRuntime:
     torch_dtype: torch.dtype | str | None
     max_seq_length: int | None
     padding_side: str
+
+
+@dataclass(frozen=True)
+class _ThroughputRuntime:
+    strategy: str
+    max_batch_tokens: int
+    pad_to_multiple_of: int | None
+    preserve_order: bool
+    restore_order_in_artifacts: bool
+
+
+@dataclass(frozen=True)
+class _UnslothRuntime:
+    enabled: bool
+    fallback_to_transformers: bool
+
+
+@dataclass(frozen=True)
+class _BatchItem:
+    order_idx: int
+    request: Mapping[str, Any]
+    prompt: str
+    prompt_tokens: int
 
 
 def _as_dict(value: Any) -> dict[str, Any]:
@@ -108,27 +133,106 @@ def _build_prompt(source: str) -> str:
     )
 
 
+def _resolve_unsloth_runtime(request: Mapping[str, Any]) -> _UnslothRuntime:
+    runtime_cfg = _as_dict(request.get("runtime_config"))
+    inference_cfg = _as_dict(runtime_cfg.get("inference"))
+    runtime = _as_dict(inference_cfg.get("runtime"))
+    unsloth = _as_dict(runtime.get("unsloth"))
+    return _UnslothRuntime(
+        enabled=bool(unsloth.get("enabled", True)),
+        fallback_to_transformers=bool(unsloth.get("fallback_to_transformers", True)),
+    )
+
+
+def _resolve_throughput_runtime(request: Mapping[str, Any]) -> _ThroughputRuntime:
+    runtime_cfg = _as_dict(request.get("runtime_config"))
+    inference_cfg = _as_dict(runtime_cfg.get("inference"))
+    throughput_cfg = _as_dict(inference_cfg.get("throughput"))
+    batching_cfg = _as_dict(throughput_cfg.get("batching"))
+
+    strategy = str(batching_cfg.get("strategy", "token_budget")).strip() or "token_budget"
+    raw_max_batch_tokens = batching_cfg.get("max_batch_tokens", 32768)
+    if isinstance(raw_max_batch_tokens, bool) or not isinstance(raw_max_batch_tokens, int):
+        max_batch_tokens = 32768
+    else:
+        max_batch_tokens = max(1024, raw_max_batch_tokens)
+
+    raw_pad = batching_cfg.get("pad_to_multiple_of")
+    pad_to_multiple_of: int | None = None
+    if isinstance(raw_pad, int) and not isinstance(raw_pad, bool) and raw_pad > 0:
+        pad_to_multiple_of = raw_pad
+
+    return _ThroughputRuntime(
+        strategy=strategy,
+        max_batch_tokens=max_batch_tokens,
+        pad_to_multiple_of=pad_to_multiple_of,
+        preserve_order=bool(throughput_cfg.get("preserve_order", False)),
+        restore_order_in_artifacts=bool(
+            throughput_cfg.get("restore_order_in_artifacts", True)
+        ),
+    )
+
+
 def _load_model(request: Mapping[str, Any]) -> tuple[Any, Any]:
     runtime = _resolve_runtime(request)
+    unsloth_runtime = _resolve_unsloth_runtime(request)
 
-    from transformers import AutoModelForCausalLM, AutoTokenizer
+    backend = "transformers"
+    model: Any = None
+    tokenizer: Any = None
 
-    tokenizer = AutoTokenizer.from_pretrained(
-        runtime.tokenizer_ref,
-        trust_remote_code=runtime.trust_remote_code,
-    )
+    unsloth_error: Exception | None = None
+    if unsloth_runtime.enabled:
+        try:
+            from unsloth import FastLanguageModel
+
+            kwargs: dict[str, Any] = {
+                "model_name": runtime.model_ref,
+                "max_seq_length": runtime.max_seq_length,
+                "load_in_4bit": True,
+            }
+            if runtime.torch_dtype is not None and runtime.torch_dtype != "auto":
+                kwargs["dtype"] = runtime.torch_dtype
+            if runtime.trust_remote_code:
+                kwargs["trust_remote_code"] = True
+
+            try:
+                model, tokenizer = FastLanguageModel.from_pretrained(**kwargs)
+            except TypeError:
+                kwargs.pop("trust_remote_code", None)
+                model, tokenizer = FastLanguageModel.from_pretrained(**kwargs)
+            FastLanguageModel.for_inference(model)
+            backend = "unsloth"
+        except Exception as exc:  # pragma: no cover - exercised in integration runtime
+            unsloth_error = exc
+            if not unsloth_runtime.fallback_to_transformers:
+                raise WorkerContractError(f"unsloth loading failed: {exc}") from exc
+            print(
+                f"[inference-worker] unsloth load failed; fallback=transformers: {exc}",
+                file=sys.stderr,
+            )
+
+    if model is None or tokenizer is None:
+        from transformers import AutoModelForCausalLM, AutoTokenizer
+
+        tokenizer = AutoTokenizer.from_pretrained(
+            runtime.tokenizer_ref,
+            trust_remote_code=runtime.trust_remote_code,
+        )
+        model_kwargs: dict[str, Any] = {
+            "trust_remote_code": runtime.trust_remote_code,
+            "device_map": "auto",
+        }
+        if runtime.torch_dtype is not None:
+            model_kwargs["torch_dtype"] = runtime.torch_dtype
+        model = AutoModelForCausalLM.from_pretrained(runtime.model_ref, **model_kwargs)
+
+    assert model is not None and tokenizer is not None
     tokenizer.padding_side = runtime.padding_side
     if tokenizer.pad_token is None and tokenizer.eos_token is not None:
         tokenizer.pad_token = tokenizer.eos_token
-
-    model_kwargs: dict[str, Any] = {
-        "trust_remote_code": runtime.trust_remote_code,
-        "device_map": "auto",
-    }
-    if runtime.torch_dtype is not None:
-        model_kwargs["torch_dtype"] = runtime.torch_dtype
-
-    model = AutoModelForCausalLM.from_pretrained(runtime.model_ref, **model_kwargs)
+    if tokenizer.pad_token_id is None and tokenizer.eos_token_id is not None:
+        tokenizer.pad_token_id = tokenizer.eos_token_id
 
     base_checkpoint = request.get("base_checkpoint")
     if isinstance(base_checkpoint, str) and base_checkpoint.strip():
@@ -177,41 +281,132 @@ def _load_model(request: Mapping[str, Any]) -> tuple[Any, Any]:
             model.set_adapter("collapse")
 
     model.eval()
+    if unsloth_error is not None and backend != "transformers":
+        raise WorkerContractError(f"unexpected backend state after unsloth error: {unsloth_error}")
     return model, tokenizer
 
 
-def _generate_one(
-    *,
-    model: Any,
-    tokenizer: Any,
-    request: Mapping[str, Any],
-) -> str:
-    source = str(request.get("source", "")).strip()
-    if not source:
-        raise WorkerContractError("inference request row missing source text")
-
-    prompt = _build_prompt(source)
+def _decoding_config(request: Mapping[str, Any]) -> tuple[int, bool, float, float | None]:
     decoding_cfg = _as_dict(request.get("decoding"))
     max_new_tokens = int(decoding_cfg.get("max_new_tokens", 256) or 256)
     if max_new_tokens <= 0:
         max_new_tokens = 256
-
     do_sample = bool(decoding_cfg.get("do_sample", False))
     temperature = float(decoding_cfg.get("temperature", 0.0) or 0.0)
     top_p_raw = decoding_cfg.get("top_p", None)
     top_p = float(top_p_raw) if isinstance(top_p_raw, (int, float)) else None
+    return max_new_tokens, do_sample, temperature, top_p
 
-    inputs = tokenizer(prompt, return_tensors="pt")
-    inputs = {k: v.to(model.device) for k, v in inputs.items()}
-    input_len = int(inputs["input_ids"].shape[1])
+
+def _request_prompt(request: Mapping[str, Any]) -> str:
+    source = str(request.get("source", "")).strip()
+    if not source:
+        raise WorkerContractError("inference request row missing source text")
+    return _build_prompt(source)
+
+
+def _build_batch_items(
+    *,
+    requests: Sequence[Mapping[str, Any]],
+    tokenizer: Any,
+    throughput: _ThroughputRuntime,
+) -> list[_BatchItem]:
+    prompts = [_request_prompt(row) for row in requests]
+    tokenized = tokenizer(prompts, add_special_tokens=True, return_length=True, truncation=False)
+    lengths = tokenized.get("length")
+    if not isinstance(lengths, list) or len(lengths) != len(requests):
+        raise WorkerContractError("failed to compute prompt lengths for batching")
+    items = [
+        _BatchItem(
+            order_idx=idx,
+            request=requests[idx],
+            prompt=prompts[idx],
+            prompt_tokens=int(lengths[idx]),
+        )
+        for idx in range(len(requests))
+    ]
+    if throughput.preserve_order:
+        return items
+    return sorted(items, key=lambda item: item.prompt_tokens)
+
+
+def _estimate_batch_tokens(max_prompt_tokens: int, rows: int, max_new_tokens: int) -> int:
+    return (max_prompt_tokens + max_new_tokens) * rows
+
+
+def _group_batches(
+    *,
+    items: Sequence[_BatchItem],
+    max_batch_tokens: int,
+) -> list[list[_BatchItem]]:
+    if not items:
+        return []
+    out: list[list[_BatchItem]] = []
+    cursor: list[_BatchItem] = []
+    max_prompt = 0
+    max_new_tokens = 0
+    for item in items:
+        item_new_tokens, _, _, _ = _decoding_config(item.request)
+        next_max_prompt = max(max_prompt, item.prompt_tokens)
+        next_max_new = max(max_new_tokens, item_new_tokens)
+        next_rows = len(cursor) + 1
+        estimated = _estimate_batch_tokens(next_max_prompt, next_rows, next_max_new)
+        if cursor and estimated > max_batch_tokens:
+            out.append(cursor)
+            cursor = []
+            max_prompt = 0
+            max_new_tokens = 0
+        cursor.append(item)
+        max_prompt = max(max_prompt, item.prompt_tokens)
+        max_new_tokens = max(max_new_tokens, item_new_tokens)
+    if cursor:
+        out.append(cursor)
+    return out
+
+
+def _generate_batch(
+    *,
+    model: Any,
+    tokenizer: Any,
+    batch: Sequence[_BatchItem],
+    pad_to_multiple_of: int | None,
+) -> dict[int, str]:
+    prompts = [item.prompt for item in batch]
+    max_new_tokens = max(_decoding_config(item.request)[0] for item in batch)
+    any_do_sample = any(_decoding_config(item.request)[1] for item in batch)
+    max_temperature = max(_decoding_config(item.request)[2] for item in batch)
+    valid_top_ps = [
+        top_p
+        for (_, _, _, top_p) in (_decoding_config(item.request) for item in batch)
+        if isinstance(top_p, float)
+    ]
+    top_p = min(valid_top_ps) if valid_top_ps else None
+
+    tokenized_kwargs: dict[str, Any] = {
+        "return_tensors": "pt",
+        "padding": True,
+        "truncation": False,
+    }
+    if pad_to_multiple_of is not None:
+        tokenized_kwargs["pad_to_multiple_of"] = pad_to_multiple_of
+
+    inputs = tokenizer(prompts, **tokenized_kwargs)
+    input_ids = inputs["input_ids"]
+    attention_mask = inputs["attention_mask"]
+    input_lengths = attention_mask.sum(dim=1).tolist()
+
+    device = getattr(model, "device", None)
+    if device is None:
+        device = next(model.parameters()).device
+    inputs = {k: v.to(device) for k, v in inputs.items()}
 
     generate_kwargs: dict[str, Any] = {
         "max_new_tokens": max_new_tokens,
-        "do_sample": do_sample,
+        "do_sample": any_do_sample,
         "pad_token_id": tokenizer.pad_token_id,
     }
-    if do_sample and temperature > 0:
-        generate_kwargs["temperature"] = temperature
+    if any_do_sample and max_temperature > 0:
+        generate_kwargs["temperature"] = max_temperature
         if top_p is not None:
             generate_kwargs["top_p"] = top_p
     else:
@@ -220,10 +415,91 @@ def _generate_one(
     with torch.inference_mode():
         output_ids = model.generate(**inputs, **generate_kwargs)
 
-    text = tokenizer.decode(output_ids[0][input_len:], skip_special_tokens=True).strip()
-    if not text:
-        raise WorkerContractError("inference generation returned empty translation")
-    return text
+    resolved: dict[int, str] = {}
+    for idx, item in enumerate(batch):
+        prompt_len = int(input_lengths[idx])
+        text = tokenizer.decode(output_ids[idx][prompt_len:], skip_special_tokens=True).strip()
+        if not text:
+            raise WorkerContractError(
+                f"inference generation returned empty translation for id={item.request.get('id')}"
+            )
+        resolved[item.order_idx] = text
+    return resolved
+
+
+def _generate_responses(
+    *,
+    model: Any,
+    tokenizer: Any,
+    requests: Sequence[Mapping[str, Any]],
+    throughput: _ThroughputRuntime,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    items = _build_batch_items(requests=requests, tokenizer=tokenizer, throughput=throughput)
+    batches = _group_batches(items=items, max_batch_tokens=throughput.max_batch_tokens)
+    resolved_mt: dict[int, str] = {}
+    oom_retry_count = 0
+
+    for batch in batches:
+        queue: list[list[_BatchItem]] = [list(batch)]
+        while queue:
+            chunk = queue.pop(0)
+            try:
+                generated = _generate_batch(
+                    model=model,
+                    tokenizer=tokenizer,
+                    batch=chunk,
+                    pad_to_multiple_of=throughput.pad_to_multiple_of,
+                )
+                resolved_mt.update(generated)
+            except torch.cuda.OutOfMemoryError:
+                oom_retry_count += 1
+                if len(chunk) <= 1:
+                    item = chunk[0]
+                    req_id = str(item.request.get("id", ""))
+                    raise WorkerContractError(
+                        f"OOM on single-row inference request id={req_id}; lower max_new_tokens or batch token budget"
+                    )
+                midpoint = int(math.ceil(len(chunk) / 2))
+                queue.insert(0, chunk[midpoint:])
+                queue.insert(0, chunk[:midpoint])
+                try:
+                    torch.cuda.empty_cache()
+                except Exception:
+                    pass
+
+    ordered_items = items if throughput.restore_order_in_artifacts else list(items)
+    if throughput.restore_order_in_artifacts:
+        ordered_items = sorted(items, key=lambda item: item.order_idx)
+
+    responses: list[dict[str, Any]] = []
+    for item in ordered_items:
+        req_id = str(item.request.get("id", ""))
+        mt = resolved_mt.get(item.order_idx)
+        if mt is None:
+            responses.append(
+                {"id": req_id, "status": "failed", "mt": "", "error": "missing generated text"}
+            )
+            continue
+        responses.append({"id": req_id, "status": "ok", "mt": mt, "error": None})
+
+    metrics = {
+        "batch_count": len(batches),
+        "avg_batch_rows": round(sum(len(batch) for batch in batches) / max(len(batches), 1), 3),
+        "avg_batch_tokens": round(
+            sum(
+                _estimate_batch_tokens(
+                    max(item.prompt_tokens for item in batch),
+                    len(batch),
+                    max(_decoding_config(item.request)[0] for item in batch),
+                )
+                for batch in batches
+            )
+            / max(len(batches), 1),
+            3,
+        ),
+        "oom_retry_count": oom_retry_count,
+    }
+    return responses, metrics
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -235,22 +511,33 @@ def main(argv: list[str] | None = None) -> int:
         write_jsonl(args.output_path, [], ensure_ascii=False)
         return 0
 
-    model, tokenizer = _load_model(requests[0])
-    responses = []
-    for row in requests:
-        req_id = str(row.get("id", ""))
-        try:
-            mt = _generate_one(model=model, tokenizer=tokenizer, request=row)
-            responses.append({"id": req_id, "status": "ok", "mt": mt, "error": None})
-        except Exception as exc:
-            responses.append(
-                {
-                    "id": req_id,
-                    "status": "failed",
-                    "mt": "",
-                    "error": str(exc),
-                }
-            )
+    throughput = _resolve_throughput_runtime(requests[0])
+    try:
+        model, tokenizer = _load_model(requests[0])
+        responses, metrics = _generate_responses(
+            model=model,
+            tokenizer=tokenizer,
+            requests=requests,
+            throughput=throughput,
+        )
+        print(
+            "[inference-worker] "
+            f"batch_count={metrics['batch_count']} "
+            f"avg_batch_rows={metrics['avg_batch_rows']} "
+            f"avg_batch_tokens={metrics['avg_batch_tokens']} "
+            f"oom_retry_count={metrics['oom_retry_count']}",
+            file=sys.stderr,
+        )
+    except Exception as exc:
+        responses = [
+            {
+                "id": str(row.get("id", "")),
+                "status": "failed",
+                "mt": "",
+                "error": str(exc),
+            }
+            for row in requests
+        ]
 
     validate_phase_response_rows(responses, schema=schema, context="inference")
     write_jsonl(args.output_path, responses, ensure_ascii=False)

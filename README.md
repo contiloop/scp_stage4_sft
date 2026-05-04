@@ -24,8 +24,25 @@ make set-real-env
 ```
 
 `make set` creates `.venv/`, installs `pytest`, and prepares local directories.
-`make set-real-env` installs the real runtime stack (Unsloth / TRL / QE / API deps).
+`make set-real-env` installs the real runtime stack (Unsloth / TRL / API deps) **and** bootstraps a QE-isolated venv (`.venv_qe`) by calling `set-qe-env`.
 By default, it installs into the instance Python (`USE_VENV=0`). To install into `.venv`, use `make USE_VENV=1 set-real-env`.
+
+MetricX install source/spec can vary by environment. Provide it through `METRICX_INSTALL_SPEC`:
+
+```sh
+make set-real-env METRICX_INSTALL_SPEC="metricx24"
+# or
+make set-real-env METRICX_INSTALL_SPEC="git+https://...#subdirectory=..."
+```
+
+`set-qe-env` writes `.qe_env` automatically:
+
+```sh
+export COMET_PYTHON=/abs/path/.venv_qe/bin/python
+export METRICX_PYTHON=/abs/path/.venv_qe/bin/python
+```
+
+Real runtime targets (`run-subset-real`, `run-stage-real`, `*-from-prepared`, `smoke-remote-qe`) auto-load `.qe_env` when present.
 
 ### 3. Configure access (HF / W&B / LLM API)
 
@@ -35,7 +52,7 @@ wandb login
 export OPENAI_API_KEY="..."
 ```
 
-If you use QE subprocess isolation, also set:
+If you manage QE venv manually (instead of `set-qe-env`), set:
 
 ```sh
 export COMET_PYTHON="/path/to/comet-env/bin/python"

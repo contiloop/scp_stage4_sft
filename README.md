@@ -27,11 +27,12 @@ make set-real-env
 `make set-real-env` installs the real runtime stack (Unsloth / TRL / API deps) **and** bootstraps a QE-isolated venv (`.venv_qe`) by calling `set-qe-env`.
 By default, it installs into the instance Python (`USE_VENV=0`). To install into `.venv`, use `make USE_VENV=1 set-real-env`.
 
-MetricX runs through a local subprocess driver (`transformers` runtime), so `metricx24` pip package install is not required.
-`METRICX_INSTALL_SPEC` is optional and ignored by default in this mode.
+MetricX install source/spec can vary by environment. Provide it through `METRICX_INSTALL_SPEC`:
 
 ```sh
 make set-real-env METRICX_INSTALL_SPEC="metricx24"
+# or
+make set-real-env METRICX_INSTALL_SPEC="git+https://...#subdirectory=..."
 ```
 
 `set-qe-env` writes `.qe_env` automatically:

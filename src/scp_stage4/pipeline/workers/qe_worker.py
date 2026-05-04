@@ -1,7 +1,7 @@
 """Real QE worker for subprocess runtime.
 
 Supports:
-- metricx24 via local MetricX subprocess driver
+- metricx24 via `python -m metricx24.predict`
 - comet_kiwi via COMET python package
 - heuristic fallback for lightweight local runs
 """
@@ -72,7 +72,7 @@ def _metricx24_scores(
         cmd = [
             python_executable,
             "-m",
-            "scp_stage4.pipeline.workers.metricx_driver",
+            "metricx24.predict",
             "--tokenizer",
             tokenizer_name,
             "--model_name_or_path",
@@ -90,7 +90,7 @@ def _metricx24_scores(
         result = subprocess.run(cmd, capture_output=True, text=True)
         if result.returncode != 0:
             detail = (result.stderr or "").strip() or (result.stdout or "").strip() or "no output"
-            raise WorkerContractError(f"metricx subprocess driver failed: {detail}")
+            raise WorkerContractError(f"metricx24.predict failed: {detail}")
 
         out_rows = read_jsonl(output_path)
         if len(out_rows) != len(rows):
@@ -132,7 +132,7 @@ def _resolve_qe_python(rows: list[dict[str, Any]], *, backend: str) -> str:
                 return resolved
         raise WorkerContractError(
             "metricx24 backend requires a QE python path; set METRICX_PYTHON "
-            "or COMET_PYTHON to a python binary where MetricX runtime deps are installed"
+            "or COMET_PYTHON to a python binary where metricx24 is installed"
         )
 
     if backend == "comet_kiwi":

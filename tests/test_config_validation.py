@@ -161,6 +161,33 @@ class ConfigValidationTests(unittest.TestCase):
         cfg["data"]["runtime"]["prepare_data"]["progress_every_seconds"] = 5.0
         validate_config(cfg)
 
+    def test_inference_unsloth_runtime_flags_must_be_boolean(self) -> None:
+        cfg = compose_config("configs/scp_stage4.yaml")
+        cfg["inference"]["runtime"]["unsloth"]["enabled"] = "yes"
+        with self.assertRaises(ConfigValidationError):
+            validate_config(cfg)
+
+        cfg = compose_config("configs/scp_stage4.yaml")
+        cfg["inference"]["runtime"]["unsloth"]["fallback_to_transformers"] = 1
+        with self.assertRaises(ConfigValidationError):
+            validate_config(cfg)
+
+    def test_inference_throughput_batching_contract(self) -> None:
+        cfg = compose_config("configs/scp_stage4.yaml")
+        cfg["inference"]["throughput"]["batching"]["strategy"] = "fixed"
+        with self.assertRaises(ConfigValidationError):
+            validate_config(cfg)
+
+        cfg = compose_config("configs/scp_stage4.yaml")
+        cfg["inference"]["throughput"]["batching"]["max_batch_tokens"] = 0
+        with self.assertRaises(ConfigValidationError):
+            validate_config(cfg)
+
+        cfg = compose_config("configs/scp_stage4.yaml")
+        cfg["inference"]["throughput"]["batching"]["pad_to_multiple_of"] = 0
+        with self.assertRaises(ConfigValidationError):
+            validate_config(cfg)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -2,6 +2,10 @@
   "inference": {
     "runtime": {
       "mode": "mock",
+      "unsloth": {
+        "enabled": true,
+        "fallback_to_transformers": true
+      },
       "subprocess": {
         "command": null
       }

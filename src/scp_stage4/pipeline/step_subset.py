@@ -974,7 +974,6 @@ def _score_mt_rows(
             request["runtime_config"] = {
                 "qe_primary": _get_by_dotpath(ctx.cfg, "qe.primary", {}),
                 "qe_scoring": _get_by_dotpath(ctx.cfg, "qe.scoring", {}),
-                "qe_isolation": _get_by_dotpath(ctx.cfg, "qe.isolation", {}),
                 "data_length": _get_by_dotpath(ctx.cfg, "data.length", {}),
             }
             requests.append(request)

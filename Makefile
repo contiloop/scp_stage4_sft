@@ -22,12 +22,8 @@ HF_DATASET_TAG_EXIST_OK ?= 0
 HF_DATASET_PRIVATE ?= 0
 HF_CREATE_REPO ?= 1
 HF_COMMIT_MESSAGE ?=
-QE_VENV_DIR ?= .venv_qe
-QE_VENV_PYTHON := $(QE_VENV_DIR)/bin/python
-METRICX_INSTALL_SPEC ?=
-QE_ENV_FILE ?= .qe_env
 
-.PHONY: set set-real-env set-qe-env validate-config validate-jsonl validate-local test-local smoke-local \
+.PHONY: set set-real-env validate-config validate-jsonl validate-local test-local smoke-local \
 	validate-remote-env smoke-remote-qe smoke-remote-model smoke-remote-api dry-run-remote-subset \
 	validate-real-config run-subset-real run-stage-real run-subset-real-from-prepared run-stage-real-from-prepared \
 	prepare-data run-subset run-stage eval eval-ood data-source-ratio \
@@ -56,7 +52,7 @@ set:
 # output artifacts: selected python environment with runtime deps for real subprocess workers
 # runtime: local/remote machine setup step; downloads packages and may require CUDA-compatible wheels
 # exit behavior: 0 on successful dependency install; non-zero on package resolver/install failure
-set-real-env: set-qe-env
+set-real-env:
 	@if [ "$(USE_VENV)" = "1" ] && [ ! -x "$(VENV_PYTHON)" ]; then \
 		$(PYTHON) -m venv $(VENV_DIR); \
 	fi
@@ -70,29 +66,6 @@ set-real-env: set-qe-env
 	@$(REAL_ENV_PY) -m uv pip install --python "$(REAL_ENV_PY)" -q --no-build-isolation \
 		flash-linear-attention "causal_conv1d==1.6.0"
 	@$(REAL_ENV_PY) -c 'import sys, torch; print("set-real-env:", sys.executable, "torch", torch.__version__)'
-
-# Target: set-qe-env
-# required config keys: none
-# input artifacts: none
-# output artifacts: QE isolated venv python for COMET/MetricX subprocess scoring
-# runtime: local/remote machine setup step for QE-only dependencies
-# exit behavior: 0 on successful setup; non-zero on dependency install failure
-set-qe-env:
-	@if [ ! -x "$(QE_VENV_PYTHON)" ]; then \
-		$(PYTHON) -m venv "$(QE_VENV_DIR)"; \
-	fi
-	@$(QE_VENV_PYTHON) -m pip install -q --upgrade pip "setuptools<82" wheel
-	@$(QE_VENV_PYTHON) -m pip install -q torch torchvision torchaudio transformers sentencepiece safetensors accelerate huggingface_hub
-	@$(QE_VENV_PYTHON) -m pip install -q "unbabel-comet>=2.2.7" huggingface_hub
-	@if [ -n "$(METRICX_INSTALL_SPEC)" ]; then \
-		$(QE_VENV_PYTHON) -m pip install -q "$(METRICX_INSTALL_SPEC)"; \
-	else \
-		echo "set-qe-env: METRICX_INSTALL_SPEC is empty; skipped MetricX package install"; \
-	fi
-	@printf "export COMET_PYTHON=%s/%s\nexport METRICX_PYTHON=%s/%s\n" "$(PWD)" "$(QE_VENV_PYTHON)" "$(PWD)" "$(QE_VENV_PYTHON)" > "$(QE_ENV_FILE)"
-	@echo "set-qe-env: wrote $(QE_ENV_FILE)"
-	@echo "set-qe-env: COMET_PYTHON=$(PWD)/$(QE_VENV_PYTHON)"
-	@echo "set-qe-env: METRICX_PYTHON=$(PWD)/$(QE_VENV_PYTHON)"
 
 # Target: validate-config
 # required config keys: model.*, data.length.*, inference.q1/q2, pipeline.subset, training.backend, external_api.*, logging.local.*
@@ -273,8 +246,7 @@ validate-remote-env:
 # runtime: remote preflight contract only; no real QE model execution
 # exit behavior: 0 when required env vars/path contracts are present; non-zero otherwise
 smoke-remote-qe:
-	@set -a; [ -f "$(QE_ENV_FILE)" ] && . "$(QE_ENV_FILE)" || true; set +a; \
-	PYTHONPATH=$(PYTHONPATH) $(PY) -m scp_stage4.pipeline.remote_checks smoke-qe --config $(CONFIG) $(OVERRIDES)
+	@PYTHONPATH=$(PYTHONPATH) $(PY) -m scp_stage4.pipeline.remote_checks smoke-qe --config $(CONFIG) $(OVERRIDES)
 
 # Target: smoke-remote-model
 # required config keys: training.backend
@@ -319,8 +291,7 @@ validate-real-config:
 # runtime: subprocess backends for inference/QE/API/training
 # exit behavior: 0 on successful subset completion; non-zero with structured failure logs
 run-subset-real: prepare-data
-	@set -a; [ -f "$(QE_ENV_FILE)" ] && . "$(QE_ENV_FILE)" || true; set +a; \
-	PYTHONPATH=$(PYTHONPATH) $(PY) -m scp_stage4.pipeline.step_subset run-subset --config configs/scp_stage4_real.yaml --run-id $(RUN_ID) --subset-idx 0 --use-prepared-data $(OVERRIDES)
+	@PYTHONPATH=$(PYTHONPATH) $(PY) -m scp_stage4.pipeline.step_subset run-subset --config configs/scp_stage4_real.yaml --run-id $(RUN_ID) --subset-idx 0 --use-prepared-data $(OVERRIDES)
 
 # Target: run-stage-real
 # required config keys: same as run-stage + subprocess worker commands
@@ -329,8 +300,7 @@ run-subset-real: prepare-data
 # runtime: subprocess backends for inference/QE/API/training
 # exit behavior: 0 when all subsets complete; non-zero on first contract/runtime failure
 run-stage-real: prepare-data
-	@set -a; [ -f "$(QE_ENV_FILE)" ] && . "$(QE_ENV_FILE)" || true; set +a; \
-	PYTHONPATH=$(PYTHONPATH) $(PY) -m scp_stage4.pipeline.step_subset run-stage --config configs/scp_stage4_real.yaml --run-id $(RUN_ID) $(OVERRIDES)
+	@PYTHONPATH=$(PYTHONPATH) $(PY) -m scp_stage4.pipeline.step_subset run-stage --config configs/scp_stage4_real.yaml --run-id $(RUN_ID) $(OVERRIDES)
 
 # Target: run-subset-real-from-prepared
 # required config keys: same as run-subset-real
@@ -339,8 +309,7 @@ run-stage-real: prepare-data
 # runtime: subprocess backends for inference/QE/API/training
 # exit behavior: 0 on successful subset completion; non-zero with structured failure logs
 run-subset-real-from-prepared:
-	@set -a; [ -f "$(QE_ENV_FILE)" ] && . "$(QE_ENV_FILE)" || true; set +a; \
-	PYTHONPATH=$(PYTHONPATH) $(PY) -m scp_stage4.pipeline.step_subset run-subset --config configs/scp_stage4_real.yaml --run-id $(RUN_ID) --subset-idx 0 --use-prepared-data $(OVERRIDES)
+	@PYTHONPATH=$(PYTHONPATH) $(PY) -m scp_stage4.pipeline.step_subset run-subset --config configs/scp_stage4_real.yaml --run-id $(RUN_ID) --subset-idx 0 --use-prepared-data $(OVERRIDES)
 
 # Target: run-stage-real-from-prepared
 # required config keys: same as run-stage-real
@@ -349,8 +318,7 @@ run-subset-real-from-prepared:
 # runtime: subprocess backends for inference/QE/API/training
 # exit behavior: 0 when all subsets complete; non-zero on first contract/runtime failure
 run-stage-real-from-prepared:
-	@set -a; [ -f "$(QE_ENV_FILE)" ] && . "$(QE_ENV_FILE)" || true; set +a; \
-	PYTHONPATH=$(PYTHONPATH) $(PY) -m scp_stage4.pipeline.step_subset run-stage --config configs/scp_stage4_real.yaml --run-id $(RUN_ID) $(OVERRIDES)
+	@PYTHONPATH=$(PYTHONPATH) $(PY) -m scp_stage4.pipeline.step_subset run-stage --config configs/scp_stage4_real.yaml --run-id $(RUN_ID) $(OVERRIDES)
 
 # Target: pack-prepared-data
 # required config keys: full data preparation config used for this datapool

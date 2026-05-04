@@ -9,7 +9,6 @@ Supports:
 from __future__ import annotations
 
 import json
-import os
 import subprocess
 import sys
 import tempfile
@@ -50,7 +49,6 @@ def _heuristic_score(src: str, mt: str) -> float:
 def _metricx24_scores(
     rows: list[dict[str, Any]],
     *,
-    python_executable: str,
     model_name: str,
     tokenizer_name: str,
     batch_size: int,
@@ -70,7 +68,7 @@ def _metricx24_scores(
         ]
         write_jsonl(input_path, payload, ensure_ascii=False)
         cmd = [
-            python_executable,
+            sys.executable,
             "-m",
             "metricx24.predict",
             "--tokenizer",
@@ -105,46 +103,6 @@ def _metricx24_scores(
                 raise WorkerContractError("metricx24 output row missing numeric prediction")
             scores.append(float(pred))
         return scores
-
-
-def _resolve_python_spec(spec: str) -> str | None:
-    value = spec.strip()
-    if not value:
-        return None
-    if "/" in value:
-        return value
-    resolved = os.environ.get(value, "").strip()
-    return resolved or None
-
-
-def _resolve_qe_python(rows: list[dict[str, Any]], *, backend: str) -> str:
-    runtime_cfg = _as_dict(rows[0].get("runtime_config"))
-    qe_isolation = _as_dict(runtime_cfg.get("qe_isolation"))
-    isolation_env = _as_dict(qe_isolation.get("env"))
-
-    comet_spec = str(isolation_env.get("comet_python_env", "COMET_PYTHON"))
-    metricx_spec = str(isolation_env.get("metricx_python_env", "METRICX_PYTHON"))
-
-    if backend == "metricx24":
-        for spec in (metricx_spec, comet_spec):
-            resolved = _resolve_python_spec(spec)
-            if resolved:
-                return resolved
-        raise WorkerContractError(
-            "metricx24 backend requires a QE python path; set METRICX_PYTHON "
-            "or COMET_PYTHON to a python binary where metricx24 is installed"
-        )
-
-    if backend == "comet_kiwi":
-        resolved = _resolve_python_spec(comet_spec)
-        if resolved:
-            return resolved
-        raise WorkerContractError(
-            "comet_kiwi backend requires COMET_PYTHON to point to a python binary "
-            "where unbabel-comet is installed"
-        )
-
-    return sys.executable
 
 
 def _comet_scores(
@@ -195,7 +153,6 @@ def _score_rows(rows: list[dict[str, Any]]) -> tuple[list[float], str]:
         max_input_length = 1536
 
     if backend == "metricx24":
-        python_executable = _resolve_qe_python(rows, backend=backend)
         if not model_name:
             raise WorkerContractError("qe.primary.model_name is required for metricx24 backend")
         if not tokenizer_name:
@@ -203,7 +160,6 @@ def _score_rows(rows: list[dict[str, Any]]) -> tuple[list[float], str]:
         return (
             _metricx24_scores(
                 rows,
-                python_executable=python_executable,
                 model_name=model_name,
                 tokenizer_name=tokenizer_name,
                 batch_size=batch_size,

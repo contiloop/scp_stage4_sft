@@ -85,9 +85,9 @@ set-qe-env:
 	@$(QE_VENV_PYTHON) -m pip install -q torch torchvision torchaudio transformers sentencepiece safetensors accelerate huggingface_hub
 	@$(QE_VENV_PYTHON) -m pip install -q "unbabel-comet>=2.2.7" huggingface_hub
 	@if [ -n "$(METRICX_INSTALL_SPEC)" ]; then \
-		$(QE_VENV_PYTHON) -m pip install -q "$(METRICX_INSTALL_SPEC)"; \
+		echo "set-qe-env: METRICX_INSTALL_SPEC provided but not required with local metricx driver: $(METRICX_INSTALL_SPEC)"; \
 	else \
-		echo "set-qe-env: METRICX_INSTALL_SPEC is empty; skipped MetricX package install"; \
+		echo "set-qe-env: local metricx driver mode (no metricx24 pip package install required)"; \
 	fi
 	@printf "export COMET_PYTHON=%s/%s\nexport METRICX_PYTHON=%s/%s\n" "$(PWD)" "$(QE_VENV_PYTHON)" "$(PWD)" "$(QE_VENV_PYTHON)" > "$(QE_ENV_FILE)"
 	@echo "set-qe-env: wrote $(QE_ENV_FILE)"

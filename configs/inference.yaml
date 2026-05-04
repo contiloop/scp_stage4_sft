@@ -4,7 +4,7 @@
       "mode": "mock",
       "unsloth": {
         "enabled": true,
-        "fallback_to_transformers": true
+        "fallback_to_transformers": false
       },
       "subprocess": {
         "command": null

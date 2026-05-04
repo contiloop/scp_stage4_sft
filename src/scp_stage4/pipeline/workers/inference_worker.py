@@ -176,58 +176,41 @@ def _resolve_throughput_runtime(request: Mapping[str, Any]) -> _ThroughputRuntim
 def _load_model(request: Mapping[str, Any]) -> tuple[Any, Any]:
     runtime = _resolve_runtime(request)
     unsloth_runtime = _resolve_unsloth_runtime(request)
-
-    backend = "transformers"
-    model: Any = None
-    tokenizer: Any = None
-
-    unsloth_error: Exception | None = None
-    if unsloth_runtime.enabled:
-        try:
-            from unsloth import FastLanguageModel
-
-            kwargs: dict[str, Any] = {
-                "model_name": runtime.model_ref,
-                "max_seq_length": runtime.max_seq_length,
-                "load_in_4bit": True,
-            }
-            if runtime.torch_dtype is not None and runtime.torch_dtype != "auto":
-                kwargs["dtype"] = runtime.torch_dtype
-            if runtime.trust_remote_code:
-                kwargs["trust_remote_code"] = True
-
-            try:
-                model, tokenizer = FastLanguageModel.from_pretrained(**kwargs)
-            except TypeError:
-                kwargs.pop("trust_remote_code", None)
-                model, tokenizer = FastLanguageModel.from_pretrained(**kwargs)
-            FastLanguageModel.for_inference(model)
-            backend = "unsloth"
-        except Exception as exc:  # pragma: no cover - exercised in integration runtime
-            unsloth_error = exc
-            if not unsloth_runtime.fallback_to_transformers:
-                raise WorkerContractError(f"unsloth loading failed: {exc}") from exc
-            print(
-                f"[inference-worker] unsloth load failed; fallback=transformers: {exc}",
-                file=sys.stderr,
-            )
-
-    if model is None or tokenizer is None:
-        from transformers import AutoModelForCausalLM, AutoTokenizer
-
-        tokenizer = AutoTokenizer.from_pretrained(
-            runtime.tokenizer_ref,
-            trust_remote_code=runtime.trust_remote_code,
+    if not unsloth_runtime.enabled:
+        raise WorkerContractError(
+            "unsloth-only inference requires inference.runtime.unsloth.enabled=true"
         )
-        model_kwargs: dict[str, Any] = {
-            "trust_remote_code": runtime.trust_remote_code,
-            "device_map": "auto",
-        }
-        if runtime.torch_dtype is not None:
-            model_kwargs["torch_dtype"] = runtime.torch_dtype
-        model = AutoModelForCausalLM.from_pretrained(runtime.model_ref, **model_kwargs)
+    if unsloth_runtime.fallback_to_transformers:
+        raise WorkerContractError(
+            "unsloth-only inference requires inference.runtime.unsloth.fallback_to_transformers=false"
+        )
+    if not torch.cuda.is_available():
+        raise WorkerContractError("unsloth-only inference requires CUDA GPU; torch.cuda.is_available()=false")
 
-    assert model is not None and tokenizer is not None
+    try:
+        from unsloth import FastLanguageModel
+    except ModuleNotFoundError as exc:
+        raise WorkerContractError("unsloth package is required for unsloth-only inference") from exc
+
+    kwargs: dict[str, Any] = {
+        "model_name": runtime.model_ref,
+        "max_seq_length": runtime.max_seq_length,
+        "load_in_4bit": True,
+    }
+    if runtime.torch_dtype is not None and runtime.torch_dtype != "auto":
+        kwargs["dtype"] = runtime.torch_dtype
+    if runtime.trust_remote_code:
+        kwargs["trust_remote_code"] = True
+
+    try:
+        model, tokenizer = FastLanguageModel.from_pretrained(**kwargs)
+    except TypeError:
+        kwargs.pop("trust_remote_code", None)
+        model, tokenizer = FastLanguageModel.from_pretrained(**kwargs)
+    except Exception as exc:
+        raise WorkerContractError(f"unsloth loading failed: {exc}") from exc
+
+    FastLanguageModel.for_inference(model)
     tokenizer.padding_side = runtime.padding_side
     if tokenizer.pad_token is None and tokenizer.eos_token is not None:
         tokenizer.pad_token = tokenizer.eos_token
@@ -281,8 +264,6 @@ def _load_model(request: Mapping[str, Any]) -> tuple[Any, Any]:
             model.set_adapter("collapse")
 
     model.eval()
-    if unsloth_error is not None and backend != "transformers":
-        raise WorkerContractError(f"unexpected backend state after unsloth error: {unsloth_error}")
     return model, tokenizer
 
 

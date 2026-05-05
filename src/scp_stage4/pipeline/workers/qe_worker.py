@@ -65,11 +65,15 @@ batch_size = int(args.get("batch_size", 8))
 max_input_length = int(args.get("max_input_length", 1536))
 payload = args["payload"]
 
-device = "cuda" if torch.cuda.is_available() else "cpu"
+if not torch.cuda.is_available():
+    raise RuntimeError("CUDA not available in QE venv - refusing CPU fallback")
+device = "cuda"
+print(f"[metricx-driver] loading {model_name} on {device}", file=sys.stderr)
 tokenizer = AutoTokenizer.from_pretrained(tokenizer_name)
 model = AutoModelForSeq2SeqLM.from_pretrained(model_name, torch_dtype="auto")
 model.to(device)
 model.eval()
+print(f"[metricx-driver] model loaded, scoring {len(payload)} rows", file=sys.stderr)
 
 formatted = [f"source: {r.get('src','')} candidate: {r.get('mt','')}" for r in payload]
 scores = []

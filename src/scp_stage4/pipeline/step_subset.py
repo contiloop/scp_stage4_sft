@@ -80,9 +80,15 @@ def _write_artifact(
     return normalized
 
 
-def _iter_parquet_mapping_rows(path: Path, *, batch_size: int = 4096) -> list[dict[str, Any]]:
+def _iter_parquet_mapping_rows(
+    path: Path,
+    *,
+    batch_size: int = 4096,
+    max_rows: int | None = None,
+) -> list[dict[str, Any]]:
     if pa is None or pq is None:
         return []
+    row_cap = None if max_rows is None else max(1, int(max_rows))
     parquet_file = pq.ParquetFile(str(path))
     rows: list[dict[str, Any]] = []
     for record_batch in parquet_file.iter_batches(batch_size=max(1, int(batch_size))):
@@ -90,20 +96,57 @@ def _iter_parquet_mapping_rows(path: Path, *, batch_size: int = 4096) -> list[di
         for row in table.to_pylist():
             if isinstance(row, Mapping):
                 rows.append(dict(row))
+                if row_cap is not None and len(rows) >= row_cap:
+                    return rows
     return rows
 
 
-def _load_prepared_rows(path: Path) -> list[dict[str, Any]]:
+def _iter_jsonl_rows(path: Path, *, max_rows: int | None = None) -> list[dict[str, Any]]:
+    row_cap = None if max_rows is None else max(1, int(max_rows))
+    rows: list[dict[str, Any]] = []
+    with path.open("r", encoding="utf-8") as handle:
+        for raw in handle:
+            line = raw.strip()
+            if not line:
+                continue
+            parsed = json.loads(line)
+            if isinstance(parsed, Mapping):
+                rows.append(dict(parsed))
+                if row_cap is not None and len(rows) >= row_cap:
+                    return rows
+    return rows
+
+
+def _load_prepared_rows(path: Path, *, max_rows: int | None = None) -> list[dict[str, Any]]:
     try:
         if path.suffix.lower() == ".parquet":
-            rows = _iter_parquet_mapping_rows(path)
+            rows = _iter_parquet_mapping_rows(path, max_rows=max_rows)
         else:
-            rows = _as_rows(read_jsonl(path))
+            if max_rows is None:
+                rows = _as_rows(read_jsonl(path))
+            else:
+                rows = _iter_jsonl_rows(path, max_rows=max_rows)
     except Exception as exc:
         raise StepSubsetError(f"failed to load prepared rows from {path}: {exc}") from exc
     if not rows:
         return []
     return validate_artifact_rows(rows, "normalized")
+
+
+def _subset_size_hint(cfg: Mapping[str, Any], subset_size_override: int | None) -> int | None:
+    subset_size = subset_size_override
+    if subset_size is None:
+        subset_size = _get_by_dotpath(cfg, "data.subset_size")
+    if subset_size is None:
+        strategy = str(_get_by_dotpath(cfg, "pipeline.subset.strategy", "fraction"))
+        if strategy == "fixed_size":
+            subset_size = _get_by_dotpath(cfg, "pipeline.subset.fixed_size")
+        else:
+            return None
+    max_size = _get_by_dotpath(cfg, "pipeline.subset.max_size")
+    if max_size is not None:
+        subset_size = min(int(subset_size), int(max_size))
+    return max(1, int(subset_size))
 
 
 def _load_fixture_rows() -> list[dict[str, Any]]:
@@ -808,6 +851,12 @@ def _materialize_input_rows(
 
     pool_rows: list[dict[str, Any]] = []
     if use_prepared_data:
+        load_limit: int | None = None
+        shuffle = bool(_get_by_dotpath(ctx.cfg, "pipeline.subset.shuffle", True))
+        if not shuffle:
+            size_hint = _subset_size_hint(ctx.cfg, subset_size_override=subset_size_override)
+            if size_hint is not None:
+                load_limit = (ctx.subset_idx + 1) * size_hint
         prepared_candidates = []
         if use_sampled_data:
             prepared_candidates.append(Path("artifacts/data/datapool.train.sampled.parquet"))
@@ -816,7 +865,7 @@ def _materialize_input_rows(
         prepared_candidates.append(Path("artifacts/data/datapool.train.jsonl"))
         for candidate in prepared_candidates:
             if candidate.exists():
-                loaded = _load_prepared_rows(candidate)
+                loaded = _load_prepared_rows(candidate, max_rows=load_limit)
                 if loaded:
                     pool_rows = loaded
                     break

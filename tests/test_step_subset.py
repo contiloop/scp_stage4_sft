@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+import scp_stage4.pipeline.step_subset as step_subset_mod
 from scp_stage4.data import read_jsonl
 from scp_stage4.pipeline.prepare_data import run_prepare_data
 from scp_stage4.pipeline.step_subset import (
@@ -368,6 +369,39 @@ def test_run_subset_prefers_parquet_before_jsonl(tmp_path: Path, monkeypatch) ->
     input_rows = read_jsonl(_subset_root(run_id) / "input.jsonl")
     assert input_rows
     assert input_rows[0]["id"] == expected_first_id
+
+
+def test_run_subset_limits_prepared_row_loading_when_shuffle_disabled() -> None:
+    run_id = "test_step_subset_load_limit"
+    _cleanup(run_id)
+    try:
+        run_prepare_data(config_path="configs/scp_stage4.yaml")
+        captured_limits: list[int | None] = []
+        original_loader = step_subset_mod._load_prepared_rows
+
+        def _capturing_loader(path: Path, *, max_rows: int | None = None):
+            captured_limits.append(max_rows)
+            return original_loader(path, max_rows=max_rows)
+
+        from unittest.mock import patch
+
+        with patch(
+            "scp_stage4.pipeline.step_subset._load_prepared_rows",
+            _capturing_loader,
+        ):
+            run_subset(
+                config_path="configs/scp_stage4.yaml",
+                run_id_override=run_id,
+                subset_idx=0,
+                subset_size_override=4,
+                use_prepared_data=True,
+                overrides=["pipeline.subset.shuffle=false"],
+            )
+
+        assert captured_limits, "expected at least one prepared-row load attempt"
+        assert captured_limits[0] == 4
+    finally:
+        _cleanup(run_id)
 
 
 def test_run_subset_writes_subset_archive_when_enabled() -> None:

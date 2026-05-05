@@ -10,6 +10,7 @@ import math
 import sys
 from dataclasses import dataclass
 from pathlib import Path
+import re
 from typing import Any, Mapping, Sequence
 
 import torch
@@ -254,8 +255,15 @@ def _attach_lora_adapter(
         )
     use_explicit_state_dict = False
     if _has_qwen35_language_model_prefix(model):
-        old_prefix_count = sum(1 for key in state_dict if "model.layers." in key)
-        new_prefix_count = sum(1 for key in state_dict if "model.language_model.layers." in key)
+        old_layer_re = re.compile(r"(^|[._])model\\.layers\\.")
+        old_prefix_count = sum(
+            1
+            for key in state_dict
+            if old_layer_re.search(key) and "model.language_model.layers." not in key
+        )
+        new_prefix_count = sum(
+            1 for key in state_dict if "model.language_model.layers." in key
+        )
         print(
             f"[inference-worker] adapter {adapter_name} key-prefix counts: "
             f"old={old_prefix_count} new={new_prefix_count}",
@@ -268,7 +276,12 @@ def _attach_lora_adapter(
                 f"{changed} tensors",
                 file=sys.stderr,
             )
-            use_explicit_state_dict = True
+            use_explicit_state_dict = changed > 0
+    print(
+        f"[inference-worker] adapter {adapter_name} load-mode: "
+        f"{'state_dict' if use_explicit_state_dict else 'path'}",
+        file=sys.stderr,
+    )
 
     if hasattr(model, "load_adapter"):
         # Prefer path-based loading for compatibility. Use explicit state_dict

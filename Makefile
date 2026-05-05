@@ -80,7 +80,7 @@ set-real-env:
 	@$(QE_VENV_DIR)/bin/pip install -q \
 		torch torchvision torchaudio \
 		transformers sentencepiece safetensors accelerate huggingface_hub \
-		"unbabel-comet>=2.2.7"
+		"unbabel-comet>=2.2.7" metricx24
 	@$(QE_VENV_DIR)/bin/python -c 'import torch; print("set-real-env: QE venv torch", torch.__version__, "cuda", torch.cuda.is_available())'
 	@echo "set-real-env: export COMET_PYTHON=$(QE_VENV_DIR)/bin/python"
 	@echo "set-real-env: export METRICX_PYTHON=$(QE_VENV_DIR)/bin/python"

@@ -94,7 +94,7 @@ def _resolve_train_runtime(row: Mapping[str, Any]) -> _TrainRuntime:
     return _TrainRuntime(
         model_ref=model_ref,
         max_seq_length=int(max_seq_length),
-        load_in_4bit=bool(model_cfg.get("load_in_4bit", True)),
+        load_in_4bit=bool(model_cfg.get("load_in_4bit", False)),
         dtype=_dtype_from_config(model_cfg.get("dtype")),
         trust_remote_code=bool(model_cfg.get("trust_remote_code", False)),
     )
@@ -352,7 +352,8 @@ def _run_sft_train(
     lora_cfg: Mapping[str, Any],
     train_cfg: Mapping[str, Any],
     seed: int,
-) -> tuple[Path, Path]:
+    save_merged_checkpoint: bool = True,
+) -> tuple[Path, Path | None]:
     model, tokenizer = _load_unsloth_model(runtime)
     model = _ensure_lora_model(model=model, runtime=runtime, lora_cfg=lora_cfg, seed=seed)
     dataset = _build_dataset(rows, tokenizer)
@@ -371,7 +372,9 @@ def _run_sft_train(
     model.save_pretrained(str(adapter_dir))
     tokenizer.save_pretrained(str(adapter_dir))
 
-    merged_dir = _save_merged_checkpoint(model, tokenizer, output_dir)
+    merged_dir: Path | None = None
+    if save_merged_checkpoint:
+        merged_dir = _save_merged_checkpoint(model, tokenizer, output_dir)
     return adapter_dir, merged_dir
 
 
@@ -426,6 +429,7 @@ def _collapse_train(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         lora_cfg=lora_cfg,
         train_cfg=train_cfg,
         seed=seed,
+        save_merged_checkpoint=False,
     )
     for item in adapter_tmp.iterdir():
         target = adapter_path / item.name
@@ -499,11 +503,13 @@ def _update_base(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         lora_cfg=lora_cfg,
         train_cfg=training_cfg,
         seed=seed,
+        save_merged_checkpoint=True,
     )
+    effective_checkpoint = merged_dir if merged_dir is not None else adapter_dir
     checkpoint_state = {
         "status": "ok",
         "adapter_path": str(adapter_dir),
-        "merged_checkpoint_path": str(merged_dir),
+        "merged_checkpoint_path": str(merged_dir) if merged_dir is not None else None,
         "trained_rows": len(rows),
         "backend": "unsloth",
     }
@@ -514,7 +520,7 @@ def _update_base(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [
         {
             "status": "ok",
-            "checkpoint_path": str(merged_dir),
+            "checkpoint_path": str(effective_checkpoint),
             "trained_rows": len(rows),
             "backend": "unsloth",
             "error": None,

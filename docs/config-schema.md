@@ -149,6 +149,7 @@ The following is a baseline example, not a hardcoded requirement.
 ```yaml
 model:
   name: alwaysgood/qwen35-it
+  load_in_4bit: false
   max_length: 8192
   max_seq_length: null
   dtype: bf16

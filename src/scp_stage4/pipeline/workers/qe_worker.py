@@ -1,7 +1,7 @@
 """Real QE worker for subprocess runtime.
 
 Supports:
-- metricx24 via `python -m metricx24.predict`
+- metricx24 via inline driver script (no metricx24 package needed)
 - comet_kiwi via COMET python package
 - heuristic fallback for lightweight local runs
 """
@@ -54,6 +54,50 @@ def _resolve_isolation_python(env_var: str) -> str:
     return sys.executable
 
 
+_METRICX_DRIVER_SCRIPT = """\
+import json, sys, torch
+from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
+
+args = json.loads(sys.stdin.read())
+model_name = args["model_name"]
+tokenizer_name = args.get("tokenizer_name") or "google/mt5-xl"
+batch_size = int(args.get("batch_size", 8))
+max_input_length = int(args.get("max_input_length", 1536))
+payload = args["payload"]
+
+device = "cuda" if torch.cuda.is_available() else "cpu"
+tokenizer = AutoTokenizer.from_pretrained(tokenizer_name)
+model = AutoModelForSeq2SeqLM.from_pretrained(model_name, torch_dtype="auto")
+model.to(device)
+model.eval()
+
+formatted = [f"source: {r.get('src','')} candidate: {r.get('mt','')}" for r in payload]
+scores = []
+for start in range(0, len(formatted), batch_size):
+    chunk = formatted[start:start + batch_size]
+    enc = tokenizer(
+        chunk,
+        max_length=max_input_length,
+        truncation=True,
+        padding=True,
+        return_tensors="pt",
+    )
+    input_ids = enc["input_ids"].to(device)
+    attn = enc["attention_mask"].to(device)
+    decoder_input_ids = torch.zeros((input_ids.shape[0], 1), dtype=torch.long, device=device)
+    with torch.inference_mode():
+        out = model(
+            input_ids=input_ids,
+            attention_mask=attn,
+            decoder_input_ids=decoder_input_ids,
+        )
+        batch_scores = out.logits[:, 0, 250089].float().clamp(0.0, 25.0).tolist()
+        scores.extend(float(x) for x in batch_scores)
+
+print(json.dumps({"model_name": model_name, "scores": scores}))
+"""
+
+
 def _metricx24_scores(
     rows: list[dict[str, Any]],
     *,
@@ -63,55 +107,53 @@ def _metricx24_scores(
     max_input_length: int,
 ) -> list[float]:
     metricx_python = _resolve_isolation_python("METRICX_PYTHON")
-    with tempfile.TemporaryDirectory(prefix="scp_qe_metricx_") as tmpdir:
-        tmp = Path(tmpdir)
-        input_path = tmp / "input.jsonl"
-        output_path = tmp / "output.jsonl"
-        payload = [
-            {
-                "source": str(row.get("src", "")),
-                "hypothesis": str(row.get("mt", "")),
-                "reference": "",
-            }
-            for row in rows
-        ]
-        write_jsonl(input_path, payload, ensure_ascii=False)
-        cmd = [
-            metricx_python,
-            "-m",
-            "metricx24.predict",
-            "--tokenizer",
-            tokenizer_name,
-            "--model_name_or_path",
-            model_name,
-            "--max_input_length",
-            str(max_input_length),
-            "--batch_size",
-            str(batch_size),
-            "--input_file",
-            str(input_path),
-            "--output_file",
-            str(output_path),
-            "--qe",
-        ]
-        result = subprocess.run(cmd, capture_output=True, text=True)
-        if result.returncode != 0:
-            detail = (result.stderr or "").strip() or (result.stdout or "").strip() or "no output"
-            raise WorkerContractError(f"metricx24.predict failed: {detail}")
+    payload = [
+        {"src": str(row.get("src", "")), "mt": str(row.get("mt", ""))}
+        for row in rows
+    ]
+    args = json.dumps({
+        "model_name": model_name,
+        "tokenizer_name": tokenizer_name,
+        "batch_size": batch_size,
+        "max_input_length": max_input_length,
+        "payload": payload,
+    })
 
-        out_rows = read_jsonl(output_path)
-        if len(out_rows) != len(rows):
-            raise WorkerContractError(
-                f"metricx24 output row mismatch: expected={len(rows)}, got={len(out_rows)}"
-            )
+    with tempfile.NamedTemporaryFile("w", suffix=".py", delete=False) as fh:
+        fh.write(_METRICX_DRIVER_SCRIPT)
+        driver_path = fh.name
 
-        scores: list[float] = []
-        for row in out_rows:
-            pred = row.get("prediction")
-            if isinstance(pred, bool) or not isinstance(pred, (int, float)):
-                raise WorkerContractError("metricx24 output row missing numeric prediction")
-            scores.append(float(pred))
-        return scores
+    try:
+        env = os.environ.copy()
+        env["HF_HUB_ENABLE_HF_TRANSFER"] = "0"
+        result = subprocess.run(
+            [metricx_python, driver_path],
+            input=args,
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+    finally:
+        try:
+            os.unlink(driver_path)
+        except OSError:
+            pass
+
+    if result.returncode != 0:
+        detail = (result.stderr or "").strip() or (result.stdout or "").strip() or "no output"
+        raise WorkerContractError(f"metricx24 driver failed: {detail}")
+
+    try:
+        out = json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        raise WorkerContractError(f"metricx24 driver output parse error: {exc}")
+
+    scores = out.get("scores", [])
+    if len(scores) != len(rows):
+        raise WorkerContractError(
+            f"metricx24 output row mismatch: expected={len(rows)}, got={len(scores)}"
+        )
+    return [float(s) for s in scores]
 
 
 def _comet_scores(

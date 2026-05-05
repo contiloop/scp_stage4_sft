@@ -242,8 +242,8 @@ def _attach_lora_adapter(
     except ModuleNotFoundError as exc:
         raise WorkerContractError("peft is required to load adapters for inference") from exc
 
-    # We load adapter weights explicitly so we can fix known key prefix drifts
-    # (e.g. model.layers.* vs model.language_model.layers.* on Qwen3.5 wrappers).
+    # We inspect adapter keys for debugging and (only when needed) apply a
+    # Qwen3.5 prefix fix before loading.
     peft_config = PeftConfig.from_pretrained(str(adapter_path))
     state_dict = _load_adapter_state_dict(adapter_path)
     if state_dict:
@@ -252,36 +252,80 @@ def _attach_lora_adapter(
             f"[inference-worker] adapter {adapter_name} first key: {first_key}",
             file=sys.stderr,
         )
+    use_explicit_state_dict = False
     if _has_qwen35_language_model_prefix(model):
-        needs_fix = any("model.layers." in key for key in state_dict)
-        has_new_prefix = any("model.language_model.layers." in key for key in state_dict)
-        if needs_fix and not has_new_prefix:
+        old_prefix_count = sum(1 for key in state_dict if "model.layers." in key)
+        new_prefix_count = sum(1 for key in state_dict if "model.language_model.layers." in key)
+        print(
+            f"[inference-worker] adapter {adapter_name} key-prefix counts: "
+            f"old={old_prefix_count} new={new_prefix_count}",
+            file=sys.stderr,
+        )
+        if old_prefix_count > 0:
             state_dict, changed = _remap_qwen35_adapter_state_dict(state_dict)
             print(
                 f"[inference-worker] adapter key remap applied for {adapter_name}: "
                 f"{changed} tensors",
                 file=sys.stderr,
             )
+            use_explicit_state_dict = True
 
     if hasattr(model, "load_adapter"):
-        # Transformers PEFT mixin path.
-        try:
-            model.load_adapter(
-                peft_model_id=None,
-                adapter_name=adapter_name,
-                peft_config=peft_config,
-                adapter_state_dict=state_dict,
-                is_trainable=is_trainable,
-            )
-        except TypeError:
-            # Older signatures might not accept peft_model_id keyword.
-            model.load_adapter(
-                None,
-                adapter_name=adapter_name,
-                peft_config=peft_config,
-                adapter_state_dict=state_dict,
-                is_trainable=is_trainable,
-            )
+        # Prefer path-based loading for compatibility. Use explicit state_dict
+        # only when key remapping was required.
+        if use_explicit_state_dict:
+            load_attempts: list[dict[str, Any]] = [
+                {
+                    "peft_model_id": str(adapter_path),
+                    "adapter_name": adapter_name,
+                    "peft_config": peft_config,
+                    "adapter_state_dict": state_dict,
+                    "is_trainable": is_trainable,
+                    "local_files_only": True,
+                },
+                {
+                    "peft_model_id": str(adapter_path),
+                    "adapter_name": adapter_name,
+                    "peft_config": peft_config,
+                    "adapter_state_dict": state_dict,
+                    "is_trainable": is_trainable,
+                },
+            ]
+        else:
+            load_attempts = [
+                {
+                    "peft_model_id": str(adapter_path),
+                    "adapter_name": adapter_name,
+                    "is_trainable": is_trainable,
+                    "local_files_only": True,
+                },
+                {
+                    "peft_model_id": str(adapter_path),
+                    "adapter_name": adapter_name,
+                    "is_trainable": is_trainable,
+                },
+            ]
+
+        last_exc: Exception | None = None
+        for kwargs in load_attempts:
+            try:
+                model.load_adapter(**kwargs)
+                return model
+            except TypeError:
+                # Older signatures may reject optional kwargs; retry without
+                # local_files_only and/or peft_model_id keyword form.
+                try:
+                    fallback_kwargs = dict(kwargs)
+                    fallback_kwargs.pop("local_files_only", None)
+                    model.load_adapter(**fallback_kwargs)
+                    return model
+                except Exception as exc:  # pragma: no cover - defensive fallback
+                    last_exc = exc
+            except Exception as exc:
+                last_exc = exc
+
+        if last_exc is not None:
+            raise last_exc
         return model
 
     # Fallback path for plain modules without mixin.

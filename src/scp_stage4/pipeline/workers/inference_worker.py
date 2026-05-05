@@ -406,11 +406,34 @@ def _load_model(request: Mapping[str, Any]) -> tuple[Any, Any]:
     except ModuleNotFoundError as exc:
         raise WorkerContractError("unsloth package is required for unsloth-only inference") from exc
 
+    q_tag = str(request.get("q_tag", "q1"))
+    collapse_path: Path | None = None
+    use_q2_adapter_dir_model_ref = False
+    if q_tag == "q2":
+        collapse_adapter = request.get("collapse_adapter")
+        if not isinstance(collapse_adapter, str) or not collapse_adapter.strip():
+            raise WorkerContractError("infer-q2 requires non-empty collapse_adapter path")
+        collapse_path = Path(collapse_adapter)
+        if not _is_lora_adapter_path(collapse_path):
+            raise WorkerContractError(
+                "collapse adapter is missing adapter_config.json; "
+                "run train-collapse-lora first"
+            )
+        # Notebook parity path:
+        # load the collapse LoRA directory directly as model_name so Unsloth/PEFT
+        # restores the adapter stack in one step, avoiding hot-load key remap drift.
+        use_q2_adapter_dir_model_ref = True
+        print(
+            f"[inference-worker] q2 load strategy: direct-adapter-model-ref ({collapse_path})",
+            file=sys.stderr,
+        )
+
+    model_name_for_load = str(collapse_path) if use_q2_adapter_dir_model_ref else runtime.model_ref
     load_in_4bit = bool(
         _as_dict(_as_dict(request.get("runtime_config")).get("model")).get("load_in_4bit", False)
     )
     kwargs: dict[str, Any] = {
-        "model_name": runtime.model_ref,
+        "model_name": model_name_for_load,
         "max_seq_length": runtime.max_seq_length,
         "load_in_4bit": load_in_4bit,
     }
@@ -429,7 +452,7 @@ def _load_model(request: Mapping[str, Any]) -> tuple[Any, Any]:
 
     base_checkpoint = request.get("base_checkpoint")
     base_update_loaded = False
-    if isinstance(base_checkpoint, str) and base_checkpoint.strip():
+    if (not use_q2_adapter_dir_model_ref) and isinstance(base_checkpoint, str) and base_checkpoint.strip():
         cp = Path(base_checkpoint)
         if _is_lora_adapter_path(cp):
             model = _attach_lora_adapter(
@@ -441,37 +464,40 @@ def _load_model(request: Mapping[str, Any]) -> tuple[Any, Any]:
             model.set_adapter("base_update")
             base_update_loaded = True
 
-    q_tag = str(request.get("q_tag", "q1"))
     if q_tag == "q2":
-        collapse_adapter = request.get("collapse_adapter")
-        if not isinstance(collapse_adapter, str) or not collapse_adapter.strip():
-            raise WorkerContractError("infer-q2 requires non-empty collapse_adapter path")
-        collapse_path = Path(collapse_adapter)
-        if not _is_lora_adapter_path(collapse_path):
-            raise WorkerContractError(
-                "collapse adapter is missing adapter_config.json; "
-                "run train-collapse-lora first"
-            )
-        model = _attach_lora_adapter(
-            model,
-            adapter_path=collapse_path,
-            adapter_name="collapse_probe",
-            is_trainable=False,
-        )
-
-        if hasattr(model, "set_adapter"):
-            if base_update_loaded:
+        if use_q2_adapter_dir_model_ref:
+            # Adapter already loaded via from_pretrained(model_name=<collapse_adapter_dir>).
+            if hasattr(model, "active_adapters"):
                 try:
-                    model.set_adapter(["base_update", "collapse_probe"])
-                except Exception:
-                    model.set_adapter("collapse_probe")
+                    active = model.active_adapters()
                     print(
-                        "[inference-worker] q2: failed to co-activate "
-                        "base_update+collapse_probe; using collapse_probe only",
+                        f"[inference-worker] q2 direct-adapter active_adapters={active}",
                         file=sys.stderr,
                     )
-            else:
-                model.set_adapter("collapse_probe")
+                except Exception:
+                    pass
+        else:
+            assert collapse_path is not None
+            model = _attach_lora_adapter(
+                model,
+                adapter_path=collapse_path,
+                adapter_name="collapse_probe",
+                is_trainable=False,
+            )
+
+            if hasattr(model, "set_adapter"):
+                if base_update_loaded:
+                    try:
+                        model.set_adapter(["base_update", "collapse_probe"])
+                    except Exception:
+                        model.set_adapter("collapse_probe")
+                        print(
+                            "[inference-worker] q2: failed to co-activate "
+                            "base_update+collapse_probe; using collapse_probe only",
+                            file=sys.stderr,
+                        )
+                else:
+                    model.set_adapter("collapse_probe")
 
     # Activate Unsloth inference path after all adapters are attached.
     # Calling this earlier can change module naming/layout and break adapter key matching.

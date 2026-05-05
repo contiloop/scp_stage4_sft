@@ -172,6 +172,123 @@ def _resolve_throughput_runtime(request: Mapping[str, Any]) -> _ThroughputRuntim
     )
 
 
+def _load_adapter_state_dict(adapter_path: Path) -> dict[str, torch.Tensor]:
+    state_dict: dict[str, torch.Tensor] = {}
+    safetensors_files = sorted(adapter_path.glob("adapter_model*.safetensors"))
+    if safetensors_files:
+        from safetensors.torch import load_file
+
+        for sf in safetensors_files:
+            state_dict.update(load_file(str(sf), device="cpu"))
+        return state_dict
+
+    bin_file = adapter_path / "adapter_model.bin"
+    if bin_file.exists():
+        loaded = torch.load(str(bin_file), map_location="cpu")
+        if not isinstance(loaded, dict):
+            raise WorkerContractError(
+                f"adapter_model.bin is not a dict at {bin_file}"
+            )
+        return loaded
+
+    raise WorkerContractError(
+        f"adapter weights not found under {adapter_path} "
+        "(expected adapter_model*.safetensors or adapter_model.bin)"
+    )
+
+
+def _has_qwen35_language_model_prefix(model: Any) -> bool:
+    for key, _ in model.named_parameters():
+        if key.startswith("model.language_model.layers."):
+            return True
+    return False
+
+
+def _remap_qwen35_adapter_state_dict(
+    state_dict: Mapping[str, torch.Tensor],
+) -> tuple[dict[str, torch.Tensor], int]:
+    remapped: dict[str, torch.Tensor] = {}
+    changed = 0
+    prefixes = (
+        ("model.layers.", "model.language_model.layers."),
+        ("model.embed_tokens.", "model.language_model.embed_tokens."),
+        ("model.norm.", "model.language_model.norm."),
+    )
+    for key, value in state_dict.items():
+        new_key = key
+        for src, dst in prefixes:
+            if new_key.startswith(src):
+                new_key = dst + new_key[len(src):]
+                changed += 1
+                break
+        remapped[new_key] = value
+    return remapped, changed
+
+
+def _attach_lora_adapter(
+    model: Any,
+    *,
+    adapter_path: Path,
+    adapter_name: str,
+    is_trainable: bool,
+) -> Any:
+    if not _is_lora_adapter_path(adapter_path):
+        raise WorkerContractError(
+            f"adapter path is missing adapter_config.json: {adapter_path}"
+        )
+
+    try:
+        from peft import PeftConfig, PeftModel
+    except ModuleNotFoundError as exc:
+        raise WorkerContractError("peft is required to load adapters for inference") from exc
+
+    # We load adapter weights explicitly so we can fix known key prefix drifts
+    # (e.g. model.layers.* vs model.language_model.layers.* on Qwen3.5 wrappers).
+    peft_config = PeftConfig.from_pretrained(str(adapter_path))
+    state_dict = _load_adapter_state_dict(adapter_path)
+    if _has_qwen35_language_model_prefix(model):
+        needs_fix = any(key.startswith("model.layers.") for key in state_dict)
+        has_new_prefix = any(
+            key.startswith("model.language_model.layers.") for key in state_dict
+        )
+        if needs_fix and not has_new_prefix:
+            state_dict, changed = _remap_qwen35_adapter_state_dict(state_dict)
+            print(
+                f"[inference-worker] adapter key remap applied for {adapter_name}: "
+                f"{changed} tensors",
+                file=sys.stderr,
+            )
+
+    if hasattr(model, "load_adapter"):
+        # Transformers PEFT mixin path.
+        try:
+            model.load_adapter(
+                peft_model_id=None,
+                adapter_name=adapter_name,
+                peft_config=peft_config,
+                adapter_state_dict=state_dict,
+                is_trainable=is_trainable,
+            )
+        except TypeError:
+            # Older signatures might not accept peft_model_id keyword.
+            model.load_adapter(
+                None,
+                adapter_name=adapter_name,
+                peft_config=peft_config,
+                adapter_state_dict=state_dict,
+                is_trainable=is_trainable,
+            )
+        return model
+
+    # Fallback path for plain modules without mixin.
+    return PeftModel.from_pretrained(
+        model,
+        str(adapter_path),
+        adapter_name=adapter_name,
+        is_trainable=is_trainable,
+    )
+
+
 def _load_model(request: Mapping[str, Any]) -> tuple[Any, Any]:
     runtime = _resolve_runtime(request)
     unsloth_runtime = _resolve_unsloth_runtime(request)
@@ -212,27 +329,14 @@ def _load_model(request: Mapping[str, Any]) -> tuple[Any, Any]:
     except Exception as exc:
         raise WorkerContractError(f"unsloth loading failed: {exc}") from exc
 
-    FastLanguageModel.for_inference(model)
-    tokenizer.padding_side = runtime.padding_side
-    if tokenizer.pad_token is None and tokenizer.eos_token is not None:
-        tokenizer.pad_token = tokenizer.eos_token
-    if tokenizer.pad_token_id is None and tokenizer.eos_token_id is not None:
-        tokenizer.pad_token_id = tokenizer.eos_token_id
-
     base_checkpoint = request.get("base_checkpoint")
     base_update_loaded = False
     if isinstance(base_checkpoint, str) and base_checkpoint.strip():
         cp = Path(base_checkpoint)
         if _is_lora_adapter_path(cp):
-            try:
-                from peft import PeftModel
-            except ModuleNotFoundError as exc:
-                raise WorkerContractError(
-                    "peft is required to load base update adapters for inference"
-                ) from exc
-            model = PeftModel.from_pretrained(
+            model = _attach_lora_adapter(
                 model,
-                str(cp),
+                adapter_path=cp,
                 adapter_name="base_update",
                 is_trainable=False,
             )
@@ -250,28 +354,12 @@ def _load_model(request: Mapping[str, Any]) -> tuple[Any, Any]:
                 "collapse adapter is missing adapter_config.json; "
                 "run train-collapse-lora first"
             )
-        try:
-            from peft import PeftModel
-        except ModuleNotFoundError as exc:
-            raise WorkerContractError(
-                "peft is required to load collapse adapters for infer-q2"
-            ) from exc
-        if hasattr(model, "load_adapter"):
-            try:
-                model.load_adapter(
-                    str(collapse_path),
-                    adapter_name="collapse_probe",
-                    is_trainable=False,
-                )
-            except TypeError:
-                model.load_adapter(str(collapse_path), adapter_name="collapse_probe")
-        else:
-            model = PeftModel.from_pretrained(
-                model,
-                str(collapse_path),
-                adapter_name="collapse_probe",
-                is_trainable=False,
-            )
+        model = _attach_lora_adapter(
+            model,
+            adapter_path=collapse_path,
+            adapter_name="collapse_probe",
+            is_trainable=False,
+        )
 
         if hasattr(model, "set_adapter"):
             if base_update_loaded:
@@ -286,6 +374,15 @@ def _load_model(request: Mapping[str, Any]) -> tuple[Any, Any]:
                     )
             else:
                 model.set_adapter("collapse_probe")
+
+    # Activate Unsloth inference path after all adapters are attached.
+    # Calling this earlier can change module naming/layout and break adapter key matching.
+    FastLanguageModel.for_inference(model)
+    tokenizer.padding_side = runtime.padding_side
+    if tokenizer.pad_token is None and tokenizer.eos_token is not None:
+        tokenizer.pad_token = tokenizer.eos_token
+    if tokenizer.pad_token_id is None and tokenizer.eos_token_id is not None:
+        tokenizer.pad_token_id = tokenizer.eos_token_id
 
     model.eval()
     return model, tokenizer

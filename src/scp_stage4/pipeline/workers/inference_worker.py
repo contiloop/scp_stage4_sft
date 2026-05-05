@@ -199,7 +199,7 @@ def _load_adapter_state_dict(adapter_path: Path) -> dict[str, torch.Tensor]:
 
 def _has_qwen35_language_model_prefix(model: Any) -> bool:
     for key, _ in model.named_parameters():
-        if key.startswith("model.language_model.layers."):
+        if "language_model.layers." in key:
             return True
     return False
 
@@ -209,18 +209,18 @@ def _remap_qwen35_adapter_state_dict(
 ) -> tuple[dict[str, torch.Tensor], int]:
     remapped: dict[str, torch.Tensor] = {}
     changed = 0
-    prefixes = (
+    replacements = (
         ("model.layers.", "model.language_model.layers."),
         ("model.embed_tokens.", "model.language_model.embed_tokens."),
         ("model.norm.", "model.language_model.norm."),
     )
     for key, value in state_dict.items():
         new_key = key
-        for src, dst in prefixes:
-            if new_key.startswith(src):
-                new_key = dst + new_key[len(src):]
-                changed += 1
-                break
+        for src, dst in replacements:
+            if src in new_key and dst not in new_key:
+                new_key = new_key.replace(src, dst)
+        if new_key != key:
+            changed += 1
         remapped[new_key] = value
     return remapped, changed
 
@@ -246,11 +246,15 @@ def _attach_lora_adapter(
     # (e.g. model.layers.* vs model.language_model.layers.* on Qwen3.5 wrappers).
     peft_config = PeftConfig.from_pretrained(str(adapter_path))
     state_dict = _load_adapter_state_dict(adapter_path)
-    if _has_qwen35_language_model_prefix(model):
-        needs_fix = any(key.startswith("model.layers.") for key in state_dict)
-        has_new_prefix = any(
-            key.startswith("model.language_model.layers.") for key in state_dict
+    if state_dict:
+        first_key = next(iter(state_dict.keys()))
+        print(
+            f"[inference-worker] adapter {adapter_name} first key: {first_key}",
+            file=sys.stderr,
         )
+    if _has_qwen35_language_model_prefix(model):
+        needs_fix = any("model.layers." in key for key in state_dict)
+        has_new_prefix = any("model.language_model.layers." in key for key in state_dict)
         if needs_fix and not has_new_prefix:
             state_dict, changed = _remap_qwen35_adapter_state_dict(state_dict)
             print(

@@ -21,6 +21,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping
 
+from scp_stage4.artifacts import compute_config_hash
 from scp_stage4.config.loader import compose_config
 from scp_stage4.config.validator import validate_config
 from scp_stage4.data import read_jsonl, write_jsonl
@@ -1398,6 +1399,86 @@ def _write_ood_placeholder(data_cfg: Mapping[str, Any], out_path: Path) -> None:
     write_jsonl(out_path, rows)
 
 
+def _prepare_force_rebuild(data_cfg: Mapping[str, Any]) -> bool:
+    runtime_cfg = data_cfg.get("runtime", {})
+    if not isinstance(runtime_cfg, Mapping):
+        return False
+    prepare_cfg = runtime_cfg.get("prepare_data", {})
+    if not isinstance(prepare_cfg, Mapping):
+        return False
+    return bool(prepare_cfg.get("force_rebuild", False))
+
+
+def _prepare_data_hash(data_cfg: Mapping[str, Any]) -> str:
+    return compute_config_hash({"data": data_cfg})
+
+
+def _prepare_state_path(out_dir: Path) -> Path:
+    return out_dir / "prepare_data_state.json"
+
+
+def _load_prepare_cache_summary(
+    *,
+    out_dir: Path,
+    data_cfg: Mapping[str, Any],
+) -> dict[str, Any] | None:
+    summary_path = out_dir / "prepare_data_summary.json"
+    state_path = _prepare_state_path(out_dir)
+    if not summary_path.exists() or not state_path.exists():
+        return None
+
+    try:
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        if not isinstance(state, Mapping):
+            return None
+    except Exception:
+        return None
+
+    current_hash = _prepare_data_hash(data_cfg)
+    saved_hash = state.get("data_config_hash")
+    if not isinstance(saved_hash, str) or not saved_hash or saved_hash != current_hash:
+        return None
+
+    required = [
+        out_dir / "datapool.normalized.jsonl",
+        out_dir / "datapool.train.jsonl",
+        out_dir / "datapool.eval.jsonl",
+        out_dir / "datapool.train.sampled.jsonl",
+    ]
+    ood_cfg = data_cfg.get("ood_test", {})
+    if isinstance(ood_cfg, Mapping) and bool(ood_cfg.get("enabled", False)):
+        required.append(out_dir / "ood_test.jsonl")
+    if any(not path.exists() for path in required):
+        return None
+
+    try:
+        summary = json.loads(summary_path.read_text(encoding="utf-8"))
+        if not isinstance(summary, dict):
+            return None
+    except Exception:
+        return None
+
+    summary["cache_hit"] = True
+    summary["data_config_hash"] = current_hash
+    summary["artifact_dir"] = str(out_dir)
+    return summary
+
+
+def _write_prepare_state(
+    *,
+    out_dir: Path,
+    data_cfg: Mapping[str, Any],
+) -> None:
+    payload = {
+        "status": "ok",
+        "data_config_hash": _prepare_data_hash(data_cfg),
+    }
+    _prepare_state_path(out_dir).write_text(
+        json.dumps(payload, ensure_ascii=False, sort_keys=True, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+
 def run_prepare_data(
     config_path: str = "configs/scp_stage4.yaml",
     overrides: list[str] | None = None,
@@ -1425,6 +1506,16 @@ def run_prepare_data(
 
     out_dir = Path("artifacts/data")
     out_dir.mkdir(parents=True, exist_ok=True)
+    force_rebuild = _prepare_force_rebuild(data_cfg)
+    if not force_rebuild:
+        cached_summary = _load_prepare_cache_summary(out_dir=out_dir, data_cfg=data_cfg)
+        if cached_summary is not None:
+            print(
+                "[prepare-data] cache hit: reusing existing prepared artifacts",
+                file=sys.stderr,
+                flush=True,
+            )
+            return cached_summary
 
     normalized_jsonl_path = out_dir / "datapool.normalized.jsonl"
     normalized_parquet_path = out_dir / "datapool.normalized.parquet"
@@ -1563,11 +1654,14 @@ def run_prepare_data(
         "progress_enabled": progress_enabled,
         "length_policy": length_policy_stats.as_dict(),
         "artifact_dir": str(out_dir),
+        "cache_hit": False,
+        "data_config_hash": _prepare_data_hash(data_cfg),
     }
     (out_dir / "prepare_data_summary.json").write_text(
         json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
+    _write_prepare_state(out_dir=out_dir, data_cfg=data_cfg)
     return summary
 
 

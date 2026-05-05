@@ -5,7 +5,7 @@
     "max_seq_length": null,
     "dtype": "bf16",
     "attention_impl": "flash_attention_2",
-    "padding_side": "right",
+    "padding_side": "left",
     "eos_token": null,
     "chat_template": null,
     "trust_remote_code": false

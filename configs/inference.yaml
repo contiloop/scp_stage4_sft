@@ -27,7 +27,7 @@
     "throughput": {
       "batching": {
         "strategy": "token_budget",
-        "max_batch_tokens": 32768,
+        "max_batch_tokens": 65536,
         "pad_to_multiple_of": 8
       },
       "preserve_order": false,

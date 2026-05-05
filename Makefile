@@ -69,7 +69,8 @@ set-real-env:
 	@$(REAL_ENV_PY) -c 'import sys, torch; print("set-real-env:", sys.executable, "torch", torch.__version__)'
 	@echo "set-real-env: setting up QE isolation venv at $(QE_VENV_DIR)..."
 	@if [ ! -x "$(QE_VENV_DIR)/bin/python" ]; then \
-		$(PYTHON) -m venv $(QE_VENV_DIR); \
+		$(PYTHON) -m venv --without-pip $(QE_VENV_DIR) && \
+		curl -sS https://bootstrap.pypa.io/get-pip.py | $(QE_VENV_DIR)/bin/python; \
 	fi
 	@$(QE_VENV_DIR)/bin/python -m pip install -q --upgrade pip setuptools wheel
 	@$(QE_VENV_DIR)/bin/pip install -q \

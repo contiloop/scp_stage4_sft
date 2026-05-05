@@ -106,9 +106,9 @@ def _resolve_runtime(request: Mapping[str, Any]) -> _ModelRuntime:
     if isinstance(model_ref, str) and Path(model_ref).exists() and _is_model_checkpoint_path(Path(model_ref)):
         tokenizer_ref = model_ref
 
-    max_seq_length = model_cfg.get("max_seq_length")
+    max_seq_length = model_cfg.get("max_seq_length") or model_cfg.get("max_length")
     if isinstance(max_seq_length, bool) or not isinstance(max_seq_length, int):
-        max_seq_length = None
+        max_seq_length = 8192
 
     padding_side = str(model_cfg.get("padding_side", "right"))
     if padding_side not in {"left", "right"}:

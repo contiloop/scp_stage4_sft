@@ -92,20 +92,6 @@ def _resolve_runtime(request: Mapping[str, Any]) -> _ModelRuntime:
     if not model_name:
         raise WorkerContractError("inference request runtime_config.model.name is required")
 
-    q_tag = str(request.get("q_tag", "q1"))
-    collapse_adapter = request.get("collapse_adapter")
-    if q_tag == "q2" and isinstance(collapse_adapter, str) and collapse_adapter.strip():
-        merged_path = Path(collapse_adapter) / "_train_tmp" / "merged_model"
-        if _is_model_checkpoint_path(merged_path):
-            return _ModelRuntime(
-                model_ref=str(merged_path),
-                tokenizer_ref=str(merged_path),
-                trust_remote_code=bool(model_cfg.get("trust_remote_code", False)),
-                torch_dtype=_dtype_from_config(model_cfg.get("dtype")),
-                max_seq_length=model_cfg.get("max_seq_length") or model_cfg.get("max_length") or 8192,
-                padding_side=str(model_cfg.get("padding_side", "left")),
-            )
-
     base_checkpoint = request.get("base_checkpoint")
     model_ref = model_name
     if isinstance(base_checkpoint, str) and base_checkpoint.strip():
@@ -234,6 +220,7 @@ def _load_model(request: Mapping[str, Any]) -> tuple[Any, Any]:
         tokenizer.pad_token_id = tokenizer.eos_token_id
 
     base_checkpoint = request.get("base_checkpoint")
+    base_update_loaded = False
     if isinstance(base_checkpoint, str) and base_checkpoint.strip():
         cp = Path(base_checkpoint)
         if _is_lora_adapter_path(cp):
@@ -250,7 +237,55 @@ def _load_model(request: Mapping[str, Any]) -> tuple[Any, Any]:
                 is_trainable=False,
             )
             model.set_adapter("base_update")
+            base_update_loaded = True
 
+    q_tag = str(request.get("q_tag", "q1"))
+    if q_tag == "q2":
+        collapse_adapter = request.get("collapse_adapter")
+        if not isinstance(collapse_adapter, str) or not collapse_adapter.strip():
+            raise WorkerContractError("infer-q2 requires non-empty collapse_adapter path")
+        collapse_path = Path(collapse_adapter)
+        if not _is_lora_adapter_path(collapse_path):
+            raise WorkerContractError(
+                "collapse adapter is missing adapter_config.json; "
+                "run train-collapse-lora first"
+            )
+        try:
+            from peft import PeftModel
+        except ModuleNotFoundError as exc:
+            raise WorkerContractError(
+                "peft is required to load collapse adapters for infer-q2"
+            ) from exc
+        if hasattr(model, "load_adapter"):
+            try:
+                model.load_adapter(
+                    str(collapse_path),
+                    adapter_name="collapse_probe",
+                    is_trainable=False,
+                )
+            except TypeError:
+                model.load_adapter(str(collapse_path), adapter_name="collapse_probe")
+        else:
+            model = PeftModel.from_pretrained(
+                model,
+                str(collapse_path),
+                adapter_name="collapse_probe",
+                is_trainable=False,
+            )
+
+        if hasattr(model, "set_adapter"):
+            if base_update_loaded:
+                try:
+                    model.set_adapter(["base_update", "collapse_probe"])
+                except Exception:
+                    model.set_adapter("collapse_probe")
+                    print(
+                        "[inference-worker] q2: failed to co-activate "
+                        "base_update+collapse_probe; using collapse_probe only",
+                        file=sys.stderr,
+                    )
+            else:
+                model.set_adapter("collapse_probe")
 
     model.eval()
     return model, tokenizer

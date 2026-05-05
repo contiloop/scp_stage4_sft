@@ -423,7 +423,14 @@ def _generate_responses(
     resolved_mt: dict[int, str] = {}
     oom_retry_count = 0
 
-    for batch in batches:
+    total_rows = len(items)
+    done_rows = 0
+    print(
+        f"[inference-worker] starting: {total_rows} rows, {len(batches)} batches",
+        file=sys.stderr,
+    )
+
+    for batch_idx, batch in enumerate(batches):
         queue: list[list[_BatchItem]] = [list(batch)]
         while queue:
             chunk = queue.pop(0)
@@ -450,6 +457,11 @@ def _generate_responses(
                     torch.cuda.empty_cache()
                 except Exception:
                     pass
+        done_rows += len(batch)
+        print(
+            f"[inference-worker] batch {batch_idx + 1}/{len(batches)} done ({done_rows}/{total_rows} rows)",
+            file=sys.stderr,
+        )
 
     ordered_items = items if throughput.restore_order_in_artifacts else list(items)
     if throughput.restore_order_in_artifacts:

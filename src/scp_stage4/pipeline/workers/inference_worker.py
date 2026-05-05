@@ -192,10 +192,13 @@ def _load_model(request: Mapping[str, Any]) -> tuple[Any, Any]:
     except ModuleNotFoundError as exc:
         raise WorkerContractError("unsloth package is required for unsloth-only inference") from exc
 
+    load_in_4bit = bool(
+        _as_dict(_as_dict(request.get("runtime_config")).get("model")).get("load_in_4bit", False)
+    )
     kwargs: dict[str, Any] = {
         "model_name": runtime.model_ref,
         "max_seq_length": runtime.max_seq_length,
-        "load_in_4bit": True,
+        "load_in_4bit": load_in_4bit,
     }
     if runtime.torch_dtype is not None and runtime.torch_dtype != "auto":
         kwargs["dtype"] = runtime.torch_dtype

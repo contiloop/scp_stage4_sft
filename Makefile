@@ -59,9 +59,17 @@ set-real-env:
 	fi
 	@$(REAL_ENV_PY) -m pip install -q --upgrade pip
 	@$(REAL_ENV_PY) -m pip install -q --upgrade --no-deps unsloth unsloth-zoo
+	@$(REAL_ENV_PY) -m pip install -q "transformers==5.5.4" "trl>=0.15.0" --no-deps
 	@$(REAL_ENV_PY) -m pip install -q \
-		tokenizers "trl>=0.22.2" "transformers>=5.2.0" \
-		openai datasets peft wandb hydra-core omegaconf
+		tokenizers hydra-core omegaconf xformers \
+		openai datasets peft wandb
+	@if $(REAL_ENV_PY) -m pip install -q weave; then \
+		echo "  weave_install_ok=true"; \
+	else \
+		echo "  weave_install_ok=false"; \
+	fi
+	@$(REAL_ENV_PY) -c "from fla.ops.gated_delta_rule import chunk_gated_delta_rule" 2>/dev/null \
+		|| $(REAL_ENV_PY) -m pip install -q flash-linear-attention
 	@$(REAL_ENV_PY) -c 'import sys, torch; print("set-real-env:", sys.executable, "torch", torch.__version__)'
 	@echo "set-real-env: setting up QE isolation venv at $(QE_VENV_DIR)..."
 	@if [ ! -x "$(QE_VENV_DIR)/bin/python" ]; then \

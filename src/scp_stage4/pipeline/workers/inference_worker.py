@@ -284,6 +284,26 @@ def _attach_lora_adapter(
     )
 
     if hasattr(model, "load_adapter"):
+        saved_checkpoint_mapping = None
+        checkpoint_mapping_had_attr = hasattr(model, "_checkpoint_conversion_mapping")
+        if checkpoint_mapping_had_attr:
+            saved_checkpoint_mapping = getattr(model, "_checkpoint_conversion_mapping")
+            try:
+                mapping_size = (
+                    len(saved_checkpoint_mapping)
+                    if isinstance(saved_checkpoint_mapping, Mapping)
+                    else None
+                )
+            except Exception:
+                mapping_size = None
+            print(
+                f"[inference-worker] adapter {adapter_name} checkpoint-conversion mapping size: "
+                f"{mapping_size if mapping_size is not None else 'unknown'}",
+                file=sys.stderr,
+            )
+            # Prevent PEFT default conversion mapping from rewriting adapter keys.
+            model._checkpoint_conversion_mapping = {}
+
         # Prefer path-based loading for compatibility. Use explicit state_dict
         # only when key remapping was required.
         if use_explicit_state_dict:
@@ -295,6 +315,7 @@ def _attach_lora_adapter(
                     "adapter_state_dict": state_dict,
                     "is_trainable": is_trainable,
                     "local_files_only": True,
+                    "key_mapping": {},
                 },
                 {
                     "peft_model_id": str(adapter_path),
@@ -302,6 +323,7 @@ def _attach_lora_adapter(
                     "peft_config": peft_config,
                     "adapter_state_dict": state_dict,
                     "is_trainable": is_trainable,
+                    "key_mapping": {},
                 },
             ]
         else:
@@ -311,34 +333,49 @@ def _attach_lora_adapter(
                     "adapter_name": adapter_name,
                     "is_trainable": is_trainable,
                     "local_files_only": True,
+                    "key_mapping": {},
                 },
                 {
                     "peft_model_id": str(adapter_path),
                     "adapter_name": adapter_name,
                     "is_trainable": is_trainable,
+                    "key_mapping": {},
                 },
             ]
 
         last_exc: Exception | None = None
-        for kwargs in load_attempts:
-            try:
-                model.load_adapter(**kwargs)
-                return model
-            except TypeError:
-                # Older signatures may reject optional kwargs; retry without
-                # local_files_only and/or peft_model_id keyword form.
+        try:
+            for kwargs in load_attempts:
                 try:
-                    fallback_kwargs = dict(kwargs)
-                    fallback_kwargs.pop("local_files_only", None)
-                    model.load_adapter(**fallback_kwargs)
+                    model.load_adapter(**kwargs)
                     return model
-                except Exception as exc:  # pragma: no cover - defensive fallback
+                except TypeError:
+                    # Older signatures may reject optional kwargs; retry with
+                    # progressively fewer optional arguments.
+                    try:
+                        fallback_kwargs = dict(kwargs)
+                        fallback_kwargs.pop("local_files_only", None)
+                        model.load_adapter(**fallback_kwargs)
+                        return model
+                    except TypeError:
+                        try:
+                            fallback_kwargs = dict(kwargs)
+                            fallback_kwargs.pop("local_files_only", None)
+                            fallback_kwargs.pop("key_mapping", None)
+                            model.load_adapter(**fallback_kwargs)
+                            return model
+                        except Exception as exc:
+                            last_exc = exc
+                    except Exception as exc:
+                        last_exc = exc
+                except Exception as exc:
                     last_exc = exc
-            except Exception as exc:
-                last_exc = exc
 
-        if last_exc is not None:
-            raise last_exc
+            if last_exc is not None:
+                raise last_exc
+        finally:
+            if checkpoint_mapping_had_attr:
+                model._checkpoint_conversion_mapping = saved_checkpoint_mapping
         return model
 
     # Fallback path for plain modules without mixin.

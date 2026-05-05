@@ -604,11 +604,10 @@ def _run_subprocess_jsonl(
         + ["--input", str(input_path), "--output", str(output_path)]
         + _subprocess_context_args(ctx=ctx, section=section, phase=phase)
     )
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=None, text=True)
     if result.returncode != 0:
-        stderr = (result.stderr or "").strip()
         stdout = (result.stdout or "").strip()
-        detail = stderr or stdout or "no output"
+        detail = stdout or "no output (check stderr above)"
         raise StepSubsetError(f"{section} subprocess failed ({result.returncode}): {detail}")
     if not output_path.exists():
         raise StepSubsetError(f"{section} subprocess did not produce output JSONL: {output_path}")
@@ -657,11 +656,10 @@ def _run_training_subprocess_jsonl(
         + ["--input", str(input_path), "--output", str(output_path)]
         + _subprocess_context_args(ctx=ctx, section="training", phase=phase)
     )
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=None, text=True)
     if result.returncode != 0:
-        stderr = (result.stderr or "").strip()
         stdout = (result.stdout or "").strip()
-        detail = stderr or stdout or "no output"
+        detail = stdout or "no output (check stderr above)"
         raise StepSubsetError(f"training subprocess failed ({result.returncode}): {detail}")
     if not output_path.exists():
         raise StepSubsetError(f"training subprocess did not produce output JSONL: {output_path}")

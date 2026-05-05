@@ -57,15 +57,11 @@ set-real-env:
 	@if [ "$(USE_VENV)" = "1" ] && [ ! -x "$(VENV_PYTHON)" ]; then \
 		$(PYTHON) -m venv $(VENV_DIR); \
 	fi
-	@$(REAL_ENV_PY) -m pip install -q --upgrade pip uv
-	@$(REAL_ENV_PY) -m uv pip install --python "$(REAL_ENV_PY)" -q --upgrade \
-		"torch>=2.11.0" "triton>=3.3.0" torchvision bitsandbytes xformers \
-		"unsloth_zoo[base] @ git+https://github.com/unslothai/unsloth-zoo" \
-		"unsloth[base] @ git+https://github.com/unslothai/unsloth" \
+	@$(REAL_ENV_PY) -m pip install -q --upgrade pip
+	@$(REAL_ENV_PY) -m pip install -q --upgrade --no-deps unsloth unsloth-zoo
+	@$(REAL_ENV_PY) -m pip install -q \
 		tokenizers "trl>=0.22.2" "transformers>=5.2.0" \
-		openai datasets peft wandb
-	@$(REAL_ENV_PY) -m uv pip install --python "$(REAL_ENV_PY)" -q --no-build-isolation \
-		flash-linear-attention causal_conv1d
+		openai datasets peft wandb hydra-core omegaconf
 	@$(REAL_ENV_PY) -c 'import sys, torch; print("set-real-env:", sys.executable, "torch", torch.__version__)'
 	@echo "set-real-env: setting up QE isolation venv at $(QE_VENV_DIR)..."
 	@if [ ! -x "$(QE_VENV_DIR)/bin/python" ]; then \

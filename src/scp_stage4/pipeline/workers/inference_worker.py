@@ -92,6 +92,20 @@ def _resolve_runtime(request: Mapping[str, Any]) -> _ModelRuntime:
     if not model_name:
         raise WorkerContractError("inference request runtime_config.model.name is required")
 
+    q_tag = str(request.get("q_tag", "q1"))
+    collapse_adapter = request.get("collapse_adapter")
+    if q_tag == "q2" and isinstance(collapse_adapter, str) and collapse_adapter.strip():
+        merged_path = Path(collapse_adapter) / "_train_tmp" / "merged_model"
+        if _is_model_checkpoint_path(merged_path):
+            return _ModelRuntime(
+                model_ref=str(merged_path),
+                tokenizer_ref=str(merged_path),
+                trust_remote_code=bool(model_cfg.get("trust_remote_code", False)),
+                torch_dtype=_dtype_from_config(model_cfg.get("dtype")),
+                max_seq_length=model_cfg.get("max_seq_length") or model_cfg.get("max_length") or 8192,
+                padding_side=str(model_cfg.get("padding_side", "left")),
+            )
+
     base_checkpoint = request.get("base_checkpoint")
     model_ref = model_name
     if isinstance(base_checkpoint, str) and base_checkpoint.strip():
@@ -99,7 +113,6 @@ def _resolve_runtime(request: Mapping[str, Any]) -> _ModelRuntime:
         if _is_model_checkpoint_path(cp):
             model_ref = str(cp)
         elif cp.exists() and not _is_lora_adapter_path(cp):
-            # Let Transformers decide for uncommon local checkpoint layouts.
             model_ref = str(cp)
 
     tokenizer_ref = model_name
@@ -238,33 +251,6 @@ def _load_model(request: Mapping[str, Any]) -> tuple[Any, Any]:
             )
             model.set_adapter("base_update")
 
-    q_tag = str(request.get("q_tag", "q1"))
-    collapse_adapter = request.get("collapse_adapter")
-    if q_tag == "q2":
-        if not isinstance(collapse_adapter, str) or not collapse_adapter.strip():
-            raise WorkerContractError("infer-q2 requires non-empty collapse_adapter path")
-        cp = Path(collapse_adapter)
-        if not _is_lora_adapter_path(cp):
-            raise WorkerContractError(
-                f"collapse adapter path is missing adapter_config.json: {cp}"
-            )
-        try:
-            from peft import PeftModel
-        except ModuleNotFoundError as exc:
-            raise WorkerContractError(
-                "peft is required to load collapse adapter for infer-q2"
-            ) from exc
-        if hasattr(model, "load_adapter"):
-            model.load_adapter(str(cp), adapter_name="collapse", is_trainable=False)
-            model.set_adapter("collapse")
-        else:
-            model = PeftModel.from_pretrained(
-                model,
-                str(cp),
-                adapter_name="collapse",
-                is_trainable=False,
-            )
-            model.set_adapter("collapse")
 
     model.eval()
     return model, tokenizer

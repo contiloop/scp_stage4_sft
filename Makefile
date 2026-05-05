@@ -6,6 +6,7 @@ USE_VENV ?= 0
 PY := $(if $(filter 1,$(USE_VENV)),$(if $(wildcard $(VENV_PYTHON)),$(VENV_PYTHON),$(PYTHON)),$(PYTHON))
 REAL_ENV_PY := $(if $(filter 1,$(USE_VENV)),$(VENV_PYTHON),$(PYTHON))
 SETUP_PY := $(if $(filter 1,$(USE_VENV)),$(VENV_PYTHON),$(PYTHON))
+QE_VENV_DIR ?= $(HOME)/.venvs/comet
 PYTHONPATH := src
 CONFIG ?= configs/scp_stage4.yaml
 RUN_ID ?= local_contract
@@ -66,6 +67,18 @@ set-real-env:
 	@$(REAL_ENV_PY) -m uv pip install --python "$(REAL_ENV_PY)" -q --no-build-isolation \
 		flash-linear-attention "causal_conv1d==1.6.0"
 	@$(REAL_ENV_PY) -c 'import sys, torch; print("set-real-env:", sys.executable, "torch", torch.__version__)'
+	@echo "set-real-env: setting up QE isolation venv at $(QE_VENV_DIR)..."
+	@if [ ! -x "$(QE_VENV_DIR)/bin/python" ]; then \
+		$(PYTHON) -m venv $(QE_VENV_DIR); \
+	fi
+	@$(QE_VENV_DIR)/bin/python -m pip install -q --upgrade pip setuptools wheel
+	@$(QE_VENV_DIR)/bin/pip install -q \
+		torch torchvision torchaudio \
+		transformers sentencepiece safetensors accelerate huggingface_hub \
+		"unbabel-comet>=2.2.7"
+	@$(QE_VENV_DIR)/bin/python -c 'import torch; print("set-real-env: QE venv torch", torch.__version__, "cuda", torch.cuda.is_available())'
+	@echo "set-real-env: export COMET_PYTHON=$(QE_VENV_DIR)/bin/python"
+	@echo "set-real-env: export METRICX_PYTHON=$(QE_VENV_DIR)/bin/python"
 
 # Target: validate-config
 # required config keys: model.*, data.length.*, inference.q1/q2, pipeline.subset, training.backend, external_api.*, logging.local.*

@@ -9,6 +9,7 @@ Supports:
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -46,6 +47,13 @@ def _heuristic_score(src: str, mt: str) -> float:
     return float(round(max(0.0, min(1.0, 0.7 * overlap + 0.3 * length_ratio)), 6))
 
 
+def _resolve_isolation_python(env_var: str) -> str:
+    value = os.environ.get(env_var, "").strip()
+    if value and Path(value).exists():
+        return value
+    return sys.executable
+
+
 def _metricx24_scores(
     rows: list[dict[str, Any]],
     *,
@@ -54,6 +62,7 @@ def _metricx24_scores(
     batch_size: int,
     max_input_length: int,
 ) -> list[float]:
+    metricx_python = _resolve_isolation_python("METRICX_PYTHON")
     with tempfile.TemporaryDirectory(prefix="scp_qe_metricx_") as tmpdir:
         tmp = Path(tmpdir)
         input_path = tmp / "input.jsonl"
@@ -68,7 +77,7 @@ def _metricx24_scores(
         ]
         write_jsonl(input_path, payload, ensure_ascii=False)
         cmd = [
-            sys.executable,
+            metricx_python,
             "-m",
             "metricx24.predict",
             "--tokenizer",
@@ -111,31 +120,67 @@ def _comet_scores(
     model_name: str,
     batch_size: int,
 ) -> list[float]:
-    try:
-        from comet import download_model, load_from_checkpoint
-    except ModuleNotFoundError as exc:
-        raise WorkerContractError(
-            "comet package is required for qe.primary.backend=comet_kiwi"
-        ) from exc
+    comet_python = _resolve_isolation_python("COMET_PYTHON")
+    if comet_python == sys.executable:
+        try:
+            from comet import download_model, load_from_checkpoint
+        except ModuleNotFoundError as exc:
+            raise WorkerContractError(
+                "comet package is required for qe.primary.backend=comet_kiwi; "
+                "set COMET_PYTHON to a venv with unbabel-comet installed"
+            ) from exc
 
-    data = [{"src": str(row.get("src", "")), "mt": str(row.get("mt", ""))} for row in rows]
-    model_path = download_model(model_name)
-    model = load_from_checkpoint(model_path)
-    try:
-        import torch
+        data = [{"src": str(row.get("src", "")), "mt": str(row.get("mt", ""))} for row in rows]
+        model_path = download_model(model_name)
+        model = load_from_checkpoint(model_path)
+        try:
+            import torch
 
-        gpus = 1 if torch.cuda.is_available() else 0
-    except Exception:
-        gpus = 0
+            gpus = 1 if torch.cuda.is_available() else 0
+        except Exception:
+            gpus = 0
 
-    pred = model.predict(data, batch_size=batch_size, gpus=gpus)
-    if isinstance(pred, Mapping):
-        values = pred.get("scores")
-    else:
-        values = getattr(pred, "scores", None)
-    if not isinstance(values, list) or len(values) != len(rows):
-        raise WorkerContractError("COMET prediction did not return per-row scores")
-    return [float(value) for value in values]
+        pred = model.predict(data, batch_size=batch_size, gpus=gpus)
+        if isinstance(pred, Mapping):
+            values = pred.get("scores")
+        else:
+            values = getattr(pred, "scores", None)
+        if not isinstance(values, list) or len(values) != len(rows):
+            raise WorkerContractError("COMET prediction did not return per-row scores")
+        return [float(value) for value in values]
+
+    with tempfile.TemporaryDirectory(prefix="scp_qe_comet_") as tmpdir:
+        tmp = Path(tmpdir)
+        input_path = tmp / "input.json"
+        output_path = tmp / "output.json"
+        data = [{"src": str(row.get("src", "")), "mt": str(row.get("mt", ""))} for row in rows]
+        input_path.write_text(json.dumps(data), encoding="utf-8")
+
+        script = (
+            "import json, sys\n"
+            "from comet import download_model, load_from_checkpoint\n"
+            "try:\n"
+            "    import torch; gpus = 1 if torch.cuda.is_available() else 0\n"
+            "except Exception:\n"
+            "    gpus = 0\n"
+            f"data = json.loads(open({str(input_path)!r}).read())\n"
+            f"model = load_from_checkpoint(download_model({model_name!r}))\n"
+            f"pred = model.predict(data, batch_size={batch_size}, gpus=gpus)\n"
+            "scores = pred.get('scores') if isinstance(pred, dict) else getattr(pred, 'scores', None)\n"
+            f"open({str(output_path)!r}, 'w').write(json.dumps(scores))\n"
+        )
+        result = subprocess.run(
+            [comet_python, "-c", script], capture_output=True, text=True
+        )
+        if result.returncode != 0:
+            detail = (result.stderr or "").strip() or (result.stdout or "").strip() or "no output"
+            raise WorkerContractError(f"COMET subprocess failed: {detail}")
+        if not output_path.exists():
+            raise WorkerContractError("COMET subprocess did not produce output")
+        values = json.loads(output_path.read_text(encoding="utf-8"))
+        if not isinstance(values, list) or len(values) != len(rows):
+            raise WorkerContractError("COMET subprocess did not return per-row scores")
+        return [float(v) for v in values]
 
 
 def _score_rows(rows: list[dict[str, Any]]) -> tuple[list[float], str]:

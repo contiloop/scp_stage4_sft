@@ -21,7 +21,7 @@
     },
     "execution": {
       "allow_microbatch_overlap": true,
-      "allow_next_subset_q1_prefetch": false,
+      "allow_next_subset_q1_prefetch": true,
       "api_concurrency_overlaps_gpu_work": true
     },
     "eval_after_subset": {

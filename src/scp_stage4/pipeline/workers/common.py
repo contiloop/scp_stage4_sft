@@ -64,6 +64,14 @@ _PHASE_SCHEMAS = {
             response_required_fields=frozenset({"id", "status", "mt", "error"}),
         ),
         WorkerPhaseSchema(
+            section="inference",
+            phase="infer-ood",
+            request_required_fields=frozenset(
+                {"id", "run_id", "subset_idx", "row_id", "q_tag", "source", "decoding"}
+            ),
+            response_required_fields=frozenset({"id", "status", "mt", "error"}),
+        ),
+        WorkerPhaseSchema(
             section="qe",
             phase="qe-q1",
             request_required_fields=frozenset(
@@ -76,6 +84,16 @@ _PHASE_SCHEMAS = {
         WorkerPhaseSchema(
             section="qe",
             phase="qe-q2",
+            request_required_fields=frozenset(
+                {"id", "row_id", "q_tag", "backend", "src", "mt"}
+            ),
+            response_required_fields=frozenset(
+                {"id", "score", "backend", "model_name", "runtime_ms", "status", "error"}
+            ),
+        ),
+        WorkerPhaseSchema(
+            section="qe",
+            phase="eval-ood",
             request_required_fields=frozenset(
                 {"id", "row_id", "q_tag", "backend", "src", "mt"}
             ),

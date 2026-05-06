@@ -11,7 +11,7 @@
     },
     "collapse_lora": {
       "rank": 4,
-      "learning_rate": 0.005,
+      "learning_rate": 0.0025,
       "num_train_epochs": 1,
       "dropout": 0.0,
       "bias": "none"

@@ -5,15 +5,19 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import logging
 import math
 import random
 import shutil
 import subprocess
 import sys
 import tarfile
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping, Sequence
+
+_prefetch_log = logging.getLogger(__name__)
 
 from scp_stage4.artifacts import compute_config_hash, persist_effective_config_artifacts
 from scp_stage4.config.loader import compose_config
@@ -336,6 +340,8 @@ def _build_context(
         failures_name=str(local_cfg.get("failures_jsonl", "failures.jsonl")),
     )
 
+    _maybe_init_weave(cfg, run_id=run_id)
+
     return PipelineContext(
         cfg=cfg,
         cfg_hash=cfg_hash,
@@ -345,6 +351,31 @@ def _build_context(
         subset_root=subset_root,
         logger=logger,
     )
+
+
+_weave_initialized: bool = False
+
+
+def _maybe_init_weave(cfg: Mapping[str, Any], *, run_id: str) -> None:
+    global _weave_initialized
+    if _weave_initialized:
+        return
+    weave_cfg = _get_by_dotpath(cfg, "logging.weave", {}) or {}
+    if not weave_cfg.get("enabled", False):
+        return
+    try:
+        import weave  # type: ignore[import-untyped]
+
+        project = str(weave_cfg.get("project", "scp_main"))
+        weave.init(project)
+        if weave_cfg.get("implicitly_patch_integrations", True):
+            try:
+                import weave.integrations.transformers  # type: ignore[import-untyped]  # noqa: F401
+            except Exception:
+                pass
+        _weave_initialized = True
+    except Exception as exc:
+        _prefetch_log.warning("weave init skipped: %s", exc)
 
 
 def _context_for_phase(ctx: PipelineContext, phase: str) -> RequiredLogContext:
@@ -849,6 +880,15 @@ def _materialize_input_rows(
 ) -> list[dict[str, Any]]:
     input_path = ctx.subset_root / "input.jsonl"
 
+    # Reuse prefetched file if already written (e.g. by background prefetch).
+    if input_path.exists() and input_path.stat().st_size > 0:
+        try:
+            existing = validate_artifact_rows(_as_rows(read_jsonl(input_path)), "normalized")
+            if existing:
+                return existing
+        except Exception:
+            pass  # corrupted prefetch — fall through and re-materialize
+
     pool_rows: list[dict[str, Any]] = []
     if use_prepared_data:
         load_limit: int | None = None
@@ -1157,6 +1197,7 @@ def run_train_collapse_lora(
                 "training_config": _get_by_dotpath(ctx.cfg, "training.collapse_lora", {}),
                 "model": _get_by_dotpath(ctx.cfg, "model", {}),
                 "base_checkpoint": _latest_checkpoint_ref(ctx),
+                "logging_config": _get_by_dotpath(ctx.cfg, "logging", {}),
             }
             for row in q1_rows
         ]
@@ -1940,6 +1981,7 @@ def run_update_base(
                     "training_config": _get_by_dotpath(ctx.cfg, "training.base_update", {}),
                     "model": _get_by_dotpath(ctx.cfg, "model", {}),
                     "base_checkpoint": _latest_checkpoint_ref(ctx),
+                    "logging_config": _get_by_dotpath(ctx.cfg, "logging", {}),
                 }
                 for row in train_rows
             ],
@@ -2122,6 +2164,463 @@ def _subset_size_for_rows(
     return max(1, size)
 
 
+def _canonical_eval_metric(metric: str) -> str:
+    text = metric.strip()
+    lowered = text.lower()
+    if lowered == "metricx24_ref":
+        return "metricx24_ref"
+    if lowered == "bleu":
+        return "BLEU"
+    if lowered == "chrf":
+        return "chrF"
+    raise StepSubsetError(
+        f"Unsupported pipeline.eval_after_subset metric={metric!r}; "
+        "allowed: metricx24_ref, BLEU, chrF"
+    )
+
+
+def _resolve_eval_metrics(eval_cfg: Mapping[str, Any]) -> list[str]:
+    raw_metrics = eval_cfg.get("metrics", ["metricx24_ref", "BLEU", "chrF"])
+    if not isinstance(raw_metrics, list) or not raw_metrics:
+        raise StepSubsetError("pipeline.eval_after_subset.metrics must be a non-empty list")
+    resolved: list[str] = []
+    seen: set[str] = set()
+    for raw in raw_metrics:
+        canonical = _canonical_eval_metric(str(raw))
+        if canonical in seen:
+            continue
+        seen.add(canonical)
+        resolved.append(canonical)
+    return resolved
+
+
+def _stable_unit_interval(value: str) -> float:
+    digest = hashlib.sha256(value.encode("utf-8")).hexdigest()
+    return (int(digest[:8], 16) % 1_000_000) / 1_000_000.0
+
+
+def _mock_bleu_score(mt: str, ref: str) -> float:
+    mt_tokens = [tok for tok in mt.split() if tok]
+    ref_tokens = [tok for tok in ref.split() if tok]
+    if not mt_tokens or not ref_tokens:
+        return 0.0
+    mt_set = set(mt_tokens)
+    ref_set = set(ref_tokens)
+    precision = len(mt_set & ref_set) / max(len(mt_set), 1)
+    brevity = min(len(mt_tokens), len(ref_tokens)) / max(len(mt_tokens), len(ref_tokens), 1)
+    return round(_clamp((0.8 * precision + 0.2 * brevity) * 100.0, 0.0, 100.0), 6)
+
+
+def _mock_chrf_score(mt: str, ref: str) -> float:
+    mt_chars = {ch for ch in mt if not ch.isspace()}
+    ref_chars = {ch for ch in ref if not ch.isspace()}
+    if not mt_chars or not ref_chars:
+        return 0.0
+    precision = len(mt_chars & ref_chars) / max(len(mt_chars), 1)
+    recall = len(mt_chars & ref_chars) / max(len(ref_chars), 1)
+    if precision + recall <= 0:
+        return 0.0
+    fscore = 2 * precision * recall / (precision + recall)
+    return round(_clamp(fscore * 100.0, 0.0, 100.0), 6)
+
+
+def _load_ood_eval_rows(
+    *,
+    ctx: PipelineContext,
+    dataset_name: str,
+    source_column: str,
+    reference_column: str,
+) -> list[dict[str, Any]]:
+    candidates: list[Path] = []
+    dataset_token = dataset_name.strip()
+    if not dataset_token:
+        raise StepSubsetError("pipeline.eval_after_subset.dataset must be a non-empty string")
+    dataset_path = Path(dataset_token)
+    if dataset_path.suffix in {".jsonl", ".parquet"}:
+        candidates.append(dataset_path)
+    else:
+        candidates.append(Path("artifacts/data") / f"{dataset_token}.jsonl")
+        candidates.append(Path("artifacts/data") / f"{dataset_token}.parquet")
+
+    loaded_rows: list[dict[str, Any]] = []
+    used_path: Path | None = None
+    for candidate in candidates:
+        if candidate.exists():
+            try:
+                if candidate.suffix.lower() == ".parquet":
+                    rows = _iter_parquet_mapping_rows(candidate)
+                else:
+                    rows = _as_rows(read_jsonl(candidate))
+            except Exception as exc:
+                raise StepSubsetError(f"failed to load OOD eval rows from {candidate}: {exc}") from exc
+            if rows:
+                loaded_rows = rows
+                used_path = candidate
+                break
+
+    if not loaded_rows:
+        searched = ", ".join(str(path) for path in candidates)
+        raise StepSubsetError(
+            "OOD eval dataset not found or empty. "
+            f"dataset={dataset_name!r} searched=[{searched}]"
+        )
+
+    ood_rows: list[dict[str, Any]] = []
+    for idx, row in enumerate(loaded_rows):
+        source = str(row.get("source", row.get(source_column, ""))).strip()
+        reference = str(
+            row.get("target", row.get("reference", row.get(reference_column, "")))
+        ).strip()
+        if not source:
+            continue
+        row_id = str(row.get("id", f"{dataset_name}:{idx:06d}"))
+        ood_rows.append(
+            {
+                "id": row_id,
+                "row_id": row_id,
+                "dataset": dataset_name,
+                "source": source,
+                "reference": reference,
+                "metadata": row.get("metadata", {}),
+            }
+        )
+
+    if not ood_rows:
+        origin = str(used_path) if used_path is not None else dataset_name
+        raise StepSubsetError(f"OOD eval rows are empty after source filtering: {origin}")
+    return ood_rows
+
+
+def _generate_ood_mt_rows(
+    *,
+    ctx: PipelineContext,
+    rows: Sequence[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    mode = _runtime_mode(ctx, "inference")
+    if mode == "mock":
+        out_rows: list[dict[str, Any]] = []
+        for row in rows:
+            out = dict(row)
+            out["mt"] = f"KO_OOD::{row['id']}"
+            out_rows.append(out)
+        return out_rows
+
+    if mode == "subprocess":
+        base_checkpoint = _latest_checkpoint_ref(ctx)
+        requests = [
+            {
+                "id": f"{ctx.run_id}/subsets/subset_{ctx.subset_idx:03d}/{row['id']}/ood",
+                "run_id": ctx.run_id,
+                "subset_idx": ctx.subset_idx,
+                "row_id": row["row_id"],
+                "q_tag": "ood",
+                "source": row["source"],
+                "metadata": row.get("metadata", {}),
+                "base_checkpoint": base_checkpoint,
+                "decoding": _get_by_dotpath(ctx.cfg, "inference.q1", {}),
+                "runtime_config": {
+                    "model": _get_by_dotpath(ctx.cfg, "model", {}),
+                    "inference": _get_by_dotpath(ctx.cfg, "inference", {}),
+                    "data_length": _get_by_dotpath(ctx.cfg, "data.length", {}),
+                },
+            }
+            for row in rows
+        ]
+        response_rows = _run_subprocess_jsonl(
+            ctx=ctx,
+            section="inference",
+            phase="infer-ood",
+            input_rows=requests,
+        )
+        by_id: dict[str, dict[str, Any]] = {}
+        for resp in response_rows:
+            resp_id = resp.get("id")
+            mt = resp.get("mt")
+            status = resp.get("status", "ok")
+            if not isinstance(resp_id, str) or not resp_id:
+                raise StepSubsetError("inference subprocess response missing id for eval-ood")
+            if status != "ok":
+                raise StepSubsetError(
+                    f"inference subprocess row failed for eval-ood id={resp_id}: {resp.get('error')}"
+                )
+            if not isinstance(mt, str) or not mt.strip():
+                raise StepSubsetError(f"inference subprocess response missing mt for eval-ood id={resp_id}")
+            by_id[resp_id] = resp
+
+        out_rows: list[dict[str, Any]] = []
+        for req, row in zip(requests, rows):
+            resp = by_id.get(str(req["id"]))
+            if resp is None:
+                raise StepSubsetError(
+                    f"inference subprocess missing eval-ood response for id={req['id']}"
+                )
+            out = dict(row)
+            out["mt"] = str(resp["mt"])
+            out_rows.append(out)
+        return out_rows
+
+    raise StepSubsetError(f"Unsupported inference runtime mode for eval-ood: {mode}")
+
+
+def _score_ood_metric_rows(
+    *,
+    ctx: PipelineContext,
+    rows: Sequence[Mapping[str, Any]],
+    metric_name: str,
+    metric_settings: Mapping[str, Any],
+) -> list[float]:
+    mode = _runtime_mode(ctx, "qe")
+    if mode == "mock":
+        scores: list[float] = []
+        for row in rows:
+            source = str(row["source"])
+            mt = str(row["mt"])
+            reference = str(row.get("reference", ""))
+            if metric_name == "metricx24_ref":
+                base = _stable_unit_interval(f"{row['id']}::{source}::{mt}::{reference}")
+                scores.append(round(4.0 + base * 16.0, 6))
+            elif metric_name == "BLEU":
+                scores.append(_mock_bleu_score(mt, reference))
+            elif metric_name == "chrF":
+                scores.append(_mock_chrf_score(mt, reference))
+            else:
+                raise StepSubsetError(f"Unsupported eval metric in mock mode: {metric_name}")
+        return scores
+
+    if mode == "subprocess":
+        backend = metric_name
+        requests: list[dict[str, Any]] = []
+        request_ids: list[str] = []
+        for row in rows:
+            req_id = (
+                f"{ctx.run_id}/subsets/subset_{ctx.subset_idx:03d}/{row['id']}/eval-ood/{backend}"
+            )
+            request = QeIsolationRequest(
+                id=req_id,
+                row_id=str(row["row_id"]),
+                q_tag="ood",
+                backend=backend,
+                src=str(row["source"]),
+                mt=str(row["mt"]),
+                run_id=ctx.run_id,
+                subset_idx=ctx.subset_idx,
+                phase="eval-ood",
+                ref=str(row.get("reference", "")),
+            ).to_dict()
+            request["runtime_config"] = {
+                "qe_primary": _get_by_dotpath(ctx.cfg, "qe.primary", {}),
+                "qe_scoring": _get_by_dotpath(ctx.cfg, "qe.scoring", {}),
+                "metric_settings": metric_settings,
+            }
+            requests.append(request)
+            request_ids.append(req_id)
+
+        response_rows = _run_subprocess_jsonl(
+            ctx=ctx,
+            section="qe",
+            phase="eval-ood",
+            input_rows=requests,
+        )
+        by_id: dict[str, QeIsolationResponse] = {}
+        for row in response_rows:
+            parsed = QeIsolationResponse.from_dict(row)
+            if parsed.status not in {None, "ok"}:
+                raise StepSubsetError(
+                    f"qe subprocess row failed for eval-ood id={parsed.id}: {parsed.error}"
+                )
+            by_id[parsed.id] = parsed
+
+        scores: list[float] = []
+        for req_id in request_ids:
+            parsed = by_id.get(req_id)
+            if parsed is None:
+                raise StepSubsetError(f"qe subprocess missing eval-ood response for id={req_id}")
+            score = float(parsed.score)
+            if not math.isfinite(score):
+                raise StepSubsetError(
+                    f"qe subprocess returned non-finite eval-ood score for id={req_id}"
+                )
+            scores.append(score)
+        return scores
+
+    raise StepSubsetError(f"Unsupported qe runtime mode for eval-ood: {mode}")
+
+
+def _mean(values: Sequence[float]) -> float:
+    if not values:
+        return 0.0
+    return float(sum(values) / len(values))
+
+
+def run_eval_ood(
+    *,
+    config_path: str = "configs/scp_stage4.yaml",
+    overrides: list[str] | None = None,
+    run_id_override: str | None = None,
+    subset_idx: int = 0,
+) -> dict[str, Any]:
+    ctx = _build_context(
+        config_path=config_path,
+        overrides=overrides,
+        run_id_override=run_id_override,
+        subset_idx=subset_idx,
+    )
+    eval_cfg = _get_by_dotpath(ctx.cfg, "pipeline.eval_after_subset", {})
+    if not isinstance(eval_cfg, Mapping):
+        raise StepSubsetError("pipeline.eval_after_subset must be a mapping")
+    if not bool(eval_cfg.get("enabled", False)):
+        raise StepSubsetError("pipeline.eval_after_subset.enabled=false; eval-ood is disabled")
+
+    dataset_name = str(eval_cfg.get("dataset", "ood_test"))
+    source_column = str(eval_cfg.get("source_column", "Source_En"))
+    reference_column = str(eval_cfg.get("reference_column", "Target_Ko"))
+    metric_names = _resolve_eval_metrics(eval_cfg)
+    metric_settings = _get_by_dotpath(eval_cfg, "metric_settings", {})
+    if not isinstance(metric_settings, Mapping):
+        metric_settings = {}
+
+    ood_rows = _load_ood_eval_rows(
+        ctx=ctx,
+        dataset_name=dataset_name,
+        source_column=source_column,
+        reference_column=reference_column,
+    )
+    generated_rows = _generate_ood_mt_rows(ctx=ctx, rows=ood_rows)
+
+    for row in generated_rows:
+        row["eval_dataset"] = dataset_name
+
+    metricx_raw: list[float] = []
+    metricx_quality: list[float] = []
+    bleu_scores: list[float] = []
+    chrf_scores: list[float] = []
+
+    for metric_name in metric_names:
+        scores = _score_ood_metric_rows(
+            ctx=ctx,
+            rows=generated_rows,
+            metric_name=metric_name,
+            metric_settings=metric_settings,
+        )
+        if len(scores) != len(generated_rows):
+            raise StepSubsetError(
+                f"eval-ood score length mismatch for {metric_name}: "
+                f"expected={len(generated_rows)} got={len(scores)}"
+            )
+
+        if metric_name == "metricx24_ref":
+            for row, raw in zip(generated_rows, scores):
+                quality, clamped = _qe_quality_from_raw(ctx=ctx, raw_score=float(raw))
+                row["metricx24_ref_raw_error"] = float(raw)
+                row["metricx24_ref_quality"] = float(quality)
+                row["metricx24_ref_clamped"] = bool(clamped)
+                metricx_raw.append(float(raw))
+                metricx_quality.append(float(quality))
+        elif metric_name == "BLEU":
+            for row, value in zip(generated_rows, scores):
+                row["bleu"] = float(value)
+                bleu_scores.append(float(value))
+        elif metric_name == "chrF":
+            for row, value in zip(generated_rows, scores):
+                row["chrf"] = float(value)
+                chrf_scores.append(float(value))
+
+    eval_root = ctx.run_root / "eval" / dataset_name
+    eval_root.mkdir(parents=True, exist_ok=True)
+    rows_path = eval_root / f"subset_{ctx.subset_idx:03d}.rows.jsonl"
+    summary_path = eval_root / f"subset_{ctx.subset_idx:03d}.summary.json"
+    history_path = eval_root / "history.jsonl"
+
+    write_jsonl(rows_path, generated_rows, ensure_ascii=False)
+
+    history_rows: list[dict[str, Any]] = []
+    if history_path.exists():
+        loaded = _as_rows(read_jsonl(history_path))
+        for row in loaded:
+            if int(row.get("subset_idx", -1)) != ctx.subset_idx:
+                history_rows.append(row)
+
+    previous_quality_mean = None
+    if metricx_quality:
+        previous_candidates = [
+            row
+            for row in history_rows
+            if isinstance(row.get("metricx24_ref_quality_mean"), (int, float))
+            and int(row.get("subset_idx", -1)) < ctx.subset_idx
+        ]
+        if previous_candidates:
+            previous_row = max(previous_candidates, key=lambda row: int(row.get("subset_idx", -1)))
+            previous_quality_mean = float(previous_row["metricx24_ref_quality_mean"])
+
+    metricx_quality_mean = _mean(metricx_quality) if metricx_quality else None
+    quality_delta = (
+        metricx_quality_mean - previous_quality_mean
+        if metricx_quality_mean is not None and previous_quality_mean is not None
+        else 0.0
+    )
+
+    summary: dict[str, Any] = {
+        "run_id": ctx.run_id,
+        "subset_idx": ctx.subset_idx,
+        "config_hash": ctx.cfg_hash,
+        "dataset": dataset_name,
+        "rows": len(generated_rows),
+        "metrics": metric_names,
+        "artifact_path_rows": str(rows_path),
+    }
+    if metricx_raw:
+        summary["metricx24_ref_raw_error_mean"] = _mean(metricx_raw)
+    if metricx_quality_mean is not None:
+        summary["metricx24_ref_quality_mean"] = metricx_quality_mean
+        summary["metricx24_ref_quality_delta_from_previous"] = quality_delta
+    if bleu_scores:
+        summary["bleu_mean"] = _mean(bleu_scores)
+    if chrf_scores:
+        summary["chrf_mean"] = _mean(chrf_scores)
+
+    _write_json_file(summary_path, summary)
+    history_rows.append(summary)
+    history_rows.sort(key=lambda row: int(row.get("subset_idx", -1)))
+    write_jsonl(history_path, history_rows, ensure_ascii=False)
+
+    log_metrics: dict[str, Any] = {
+        "ood/rows": len(generated_rows),
+    }
+    if metricx_raw:
+        log_metrics["ood/metricx24_ref_raw_error_mean"] = float(_mean(metricx_raw))
+    if metricx_quality_mean is not None:
+        log_metrics["ood/metricx24_ref_quality_mean"] = float(metricx_quality_mean)
+        log_metrics["ood/metricx24_ref_quality_delta_from_previous"] = float(quality_delta)
+    if bleu_scores:
+        log_metrics["ood/bleu_mean"] = float(_mean(bleu_scores))
+    if chrf_scores:
+        log_metrics["ood/chrf_mean"] = float(_mean(chrf_scores))
+
+    ctx.logger.log_event(
+        context=_context_for_phase(ctx, "eval-ood"),
+        event_type="phase_completed",
+        status="ok",
+        artifact_path=str(summary_path.relative_to(ctx.run_root)),
+    )
+    ctx.logger.log_metrics(
+        context=_context_for_phase(ctx, "eval-ood"),
+        metrics=log_metrics,
+        metric_group="ood_eval",
+    )
+    _touch_failure_layout(ctx)
+
+    return {
+        "run_id": ctx.run_id,
+        "subset_idx": ctx.subset_idx,
+        "run_root": str(ctx.run_root),
+        "dataset": dataset_name,
+        "rows": len(generated_rows),
+        "summary_path": str(summary_path),
+        "rows_path": str(rows_path),
+        "metrics": log_metrics,
+    }
+
+
 def run_stage(
     *,
     config_path: str = "configs/scp_stage4.yaml",
@@ -2148,19 +2647,85 @@ def run_stage(
     if bool(_get_by_dotpath(ctx.cfg, "pipeline.subset.drop_last", False)):
         total_subsets = len(train_rows) // subset_size
 
-    subset_summaries = []
-    for subset_idx in range(total_subsets):
-        summary = run_subset(
-            config_path=config_path,
-            overrides=overrides,
-            run_id_override=ctx.run_id,
-            subset_idx=subset_idx,
-            subset_size_override=subset_size,
-            use_prepared_data=True,
-            use_sampled_data=use_sampled_data,
-            stage_completed=False,
-        )
-        subset_summaries.append(summary)
+    allow_prefetch = bool(
+        _get_by_dotpath(ctx.cfg, "pipeline.execution.allow_next_subset_q1_prefetch", False)
+    )
+    eval_cfg = _get_by_dotpath(ctx.cfg, "pipeline.eval_after_subset", {})
+    if not isinstance(eval_cfg, Mapping):
+        eval_cfg = {}
+    eval_enabled = bool(eval_cfg.get("enabled", False))
+    eval_every_n = int(eval_cfg.get("every_n_subsets", 1) or 1)
+    if eval_every_n <= 0:
+        eval_every_n = 1
+    eval_run_on_final = bool(eval_cfg.get("run_on_final_subset", True))
+
+    def _prefetch_next_input(next_idx: int) -> None:
+        try:
+            next_ctx = _build_context(
+                config_path=config_path,
+                overrides=overrides,
+                run_id_override=ctx.run_id,
+                subset_idx=next_idx,
+            )
+            _materialize_input_rows(
+                next_ctx,
+                subset_size_override=subset_size,
+                use_prepared_data=True,
+                use_sampled_data=use_sampled_data,
+            )
+            _prefetch_log.debug("prefetch: subset_%03d input ready", next_idx)
+        except Exception as exc:
+            _prefetch_log.warning("prefetch: subset_%03d failed (%s) — will re-load", next_idx, exc)
+
+    subset_summaries: list[dict[str, Any]] = []
+    eval_summaries: list[dict[str, Any]] = []
+    prefetch_future: Future[None] | None = None
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        if allow_prefetch and total_subsets > 0:
+            prefetch_future = pool.submit(_prefetch_next_input, 0)
+
+        for subset_idx in range(total_subsets):
+            if prefetch_future is not None:
+                try:
+                    prefetch_future.result()
+                except Exception:
+                    pass  # logged inside _prefetch_next_input; run_subset will reload if needed
+                prefetch_future = None
+
+            next_idx = subset_idx + 1
+            if allow_prefetch and next_idx < total_subsets:
+                prefetch_future = pool.submit(_prefetch_next_input, next_idx)
+
+            summary = run_subset(
+                config_path=config_path,
+                overrides=overrides,
+                run_id_override=ctx.run_id,
+                subset_idx=subset_idx,
+                subset_size_override=subset_size,
+                use_prepared_data=True,
+                use_sampled_data=use_sampled_data,
+                stage_completed=False,
+            )
+            should_run_eval = False
+            if eval_enabled:
+                is_final_subset = subset_idx == (total_subsets - 1)
+                is_cadence_subset = ((subset_idx + 1) % eval_every_n) == 0
+                should_run_eval = is_cadence_subset or (eval_run_on_final and is_final_subset)
+            if should_run_eval:
+                eval_summary = run_eval_ood(
+                    config_path=config_path,
+                    overrides=overrides,
+                    run_id_override=ctx.run_id,
+                    subset_idx=subset_idx,
+                )
+                summary["ood_eval"] = {
+                    "rows": int(eval_summary["rows"]),
+                    "summary_path": str(eval_summary["summary_path"]),
+                    "rows_path": str(eval_summary["rows_path"]),
+                }
+                eval_summaries.append(eval_summary)
+            subset_summaries.append(summary)
 
     archived_subset_dirs_pruned = _finalize_stage_archive_cleanup(
         ctx=ctx,
@@ -2173,10 +2738,21 @@ def run_stage(
         "run_root": str(ctx.run_root),
         "subset_size": subset_size,
         "subsets_run": len(subset_summaries),
+        "ood_evals_run": len(eval_summaries),
         "train_rows": len(train_rows),
         "archived_subset_dirs_pruned": archived_subset_dirs_pruned,
         "subsets": subset_summaries,
     }
+    if eval_summaries:
+        stage_summary["ood_eval_summaries"] = [
+            {
+                "subset_idx": int(summary["subset_idx"]),
+                "rows": int(summary["rows"]),
+                "dataset": str(summary["dataset"]),
+                "summary_path": str(summary["summary_path"]),
+            }
+            for summary in eval_summaries
+        ]
     (ctx.run_root / "run_stage_summary.json").write_text(
         json.dumps(stage_summary, ensure_ascii=False, sort_keys=True, indent=2) + "\n",
         encoding="utf-8",
@@ -2196,6 +2772,7 @@ def main(argv: list[str] | None = None) -> int:
             "unload-collapse-lora",
             "call-api",
             "update-base",
+            "eval-ood",
             "run-subset",
             "run-stage",
         ],
@@ -2256,6 +2833,13 @@ def main(argv: list[str] | None = None) -> int:
             )
         elif args.command == "update-base":
             summary = run_update_base(
+                config_path=args.config,
+                overrides=overrides,
+                run_id_override=args.run_id,
+                subset_idx=args.subset_idx,
+            )
+        elif args.command == "eval-ood":
+            summary = run_eval_ood(
                 config_path=args.config,
                 overrides=overrides,
                 run_id_override=args.run_id,

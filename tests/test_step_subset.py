@@ -17,6 +17,7 @@ from scp_stage4.pipeline.step_subset import (
     run_infer_q1,
     run_infer_q2,
     run_score,
+    run_eval_ood,
     run_stage,
     run_subset,
     run_train_collapse_lora,
@@ -108,6 +109,48 @@ def test_run_subset_writes_stepwise_artifact_chain() -> None:
         assert summary["counts"]["q2"] == len(q2_rows)
         assert summary["counts"]["selected"] == len(selected_rows)
         assert summary["preference_pairs_run_total"] == len(run_preference_rows)
+    finally:
+        _cleanup(run_id)
+
+
+def test_run_eval_ood_writes_metricx_bleu_chrf_artifacts() -> None:
+    run_id = "test_step_subset_eval_ood"
+    _cleanup(run_id)
+    try:
+        run_prepare_data(config_path="configs/scp_stage4.yaml")
+        run_subset(
+            config_path="configs/scp_stage4.yaml",
+            run_id_override=run_id,
+            subset_idx=0,
+            subset_size_override=8,
+            use_prepared_data=True,
+        )
+        summary = run_eval_ood(
+            config_path="configs/scp_stage4.yaml",
+            run_id_override=run_id,
+            subset_idx=0,
+        )
+        run_root = _run_root(run_id)
+        rows_path = run_root / "eval" / "ood_test" / "subset_000.rows.jsonl"
+        summary_path = run_root / "eval" / "ood_test" / "subset_000.summary.json"
+        history_path = run_root / "eval" / "ood_test" / "history.jsonl"
+        assert rows_path.exists()
+        assert summary_path.exists()
+        assert history_path.exists()
+
+        rows = read_jsonl(rows_path)
+        assert rows, "ood eval rows should not be empty"
+        first = rows[0]
+        assert "mt" in first
+        assert "metricx24_ref_quality" in first
+        assert "bleu" in first
+        assert "chrf" in first
+        assert summary["rows"] == len(rows)
+
+        eval_summary = json.loads(summary_path.read_text(encoding="utf-8"))
+        assert "metricx24_ref_quality_mean" in eval_summary
+        assert "bleu_mean" in eval_summary
+        assert "chrf_mean" in eval_summary
     finally:
         _cleanup(run_id)
 
@@ -460,5 +503,26 @@ def test_run_stage_can_prune_subset_dirs_after_archiving() -> None:
         manifest_path = _run_root(run_id) / "archives" / "subsets" / "subset_000.manifest.json"
         assert archive_path.exists()
         assert manifest_path.exists()
+    finally:
+        _cleanup(run_id)
+
+
+def test_run_stage_runs_eval_after_subset_when_enabled() -> None:
+    run_id = "test_stage_eval_after_subset"
+    _cleanup(run_id)
+    try:
+        run_prepare_data(config_path="configs/scp_stage4.yaml")
+        summary = run_stage(
+            config_path="configs/scp_stage4.yaml",
+            run_id_override=run_id,
+            subset_size_override=8,
+            overrides=["pipeline.stage.max_subsets=1"],
+        )
+        assert summary["subsets_run"] == 1
+        assert summary["ood_evals_run"] == 1
+        assert "ood_eval_summaries" in summary and len(summary["ood_eval_summaries"]) == 1
+        subset_summary = summary["subsets"][0]
+        assert "ood_eval" in subset_summary
+        assert (_run_root(run_id) / "eval" / "ood_test" / "subset_000.summary.json").exists()
     finally:
         _cleanup(run_id)

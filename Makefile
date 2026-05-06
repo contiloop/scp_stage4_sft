@@ -62,7 +62,7 @@ set-real-env:
 	@$(REAL_ENV_PY) -m pip install -q "transformers==5.5.4" "trl>=0.15.0" --no-deps
 	@$(REAL_ENV_PY) -m pip install -q \
 		tokenizers hydra-core omegaconf xformers \
-		openai datasets peft wandb
+		openai datasets peft wandb sacrebleu
 	@if $(REAL_ENV_PY) -m pip install -q weave; then \
 		echo "  weave_install_ok=true"; \
 	else \
@@ -82,7 +82,7 @@ set-real-env:
 	@$(QE_VENV_DIR)/bin/pip install -q --no-deps transformers
 	@$(QE_VENV_DIR)/bin/pip install -q \
 		sentencepiece safetensors accelerate huggingface_hub \
-		"unbabel-comet>=2.2.7"
+		"unbabel-comet>=2.2.7" sacrebleu
 	@$(QE_VENV_DIR)/bin/python -c 'import torch; print("set-real-env: QE venv torch", torch.__version__, "cuda", torch.cuda.is_available())'
 	@echo "set-real-env: export COMET_PYTHON=$(QE_VENV_DIR)/bin/python"
 	@echo "set-real-env: export METRICX_PYTHON=$(QE_VENV_DIR)/bin/python"
@@ -225,21 +225,20 @@ run-stage: prepare-data
 
 # Target: eval
 # required config keys: pipeline.eval_after_subset.*, logging.*
-# input artifacts: mocked subset outputs
-# output artifacts: metrics JSONL entries (mocked)
-# runtime: local CPU only
-# exit behavior: 0 on mocked eval contract pass; non-zero on contract failure
-eval:
-	@echo "eval: mocked in foundation mode (no real metric runtime)"
+# input artifacts: subset update-base checkpoint + artifacts/data/ood_test.jsonl
+# output artifacts: artifacts/runs/$(RUN_ID)/eval/ood_test/subset_000.{rows,summary}.jsonl/json
+# runtime: inference + QE backends according to config runtime modes
+# exit behavior: 0 on successful OOD eval; non-zero on inference/QE contract failure
+eval: prepare-data
+	@PYTHONPATH=$(PYTHONPATH) $(PY) -m scp_stage4.pipeline.step_subset eval-ood --config $(CONFIG) --run-id $(RUN_ID) --subset-idx 0 $(OVERRIDES)
 
 # Target: eval-ood
 # required config keys: pipeline.eval_after_subset.*, data.ood_test.*
-# input artifacts: mocked subset outputs + ood config
-# output artifacts: mocked OOD eval marker/logs
-# runtime: local CPU only
-# exit behavior: 0 on mocked OOD eval contract pass; non-zero on contract failure
-eval-ood:
-	@echo "eval-ood: mocked in foundation mode (no real reference-based evaluation)"
+# input artifacts: subset update-base checkpoint + OOD reference set
+# output artifacts: artifacts/runs/$(RUN_ID)/eval/ood_test/subset_000.{rows,summary}.jsonl/json
+# runtime: inference + QE subprocess/mock backends per config
+# exit behavior: 0 on successful reference-based eval; non-zero on runtime/contract failure
+eval-ood: eval
 
 # Target: data-source-ratio
 # required config keys: none

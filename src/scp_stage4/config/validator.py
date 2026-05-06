@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from typing import Any
+from typing import Any, Mapping
 
 
 class ConfigValidationError(ValueError):
@@ -461,9 +461,55 @@ def validate_config(cfg: dict[str, Any]) -> None:
     eval_after = _as_dict(
         pipeline.get("eval_after_subset", {}), "pipeline.eval_after_subset", errors
     )
+    eval_enabled = eval_after.get("enabled")
+    if eval_enabled is not None and not isinstance(eval_enabled, bool):
+        _err(errors, "pipeline.eval_after_subset.enabled must be a boolean")
+    eval_dataset = eval_after.get("dataset")
+    if not isinstance(eval_dataset, str) or not eval_dataset.strip():
+        _err(errors, "pipeline.eval_after_subset.dataset must be a non-empty string")
     every_n = eval_after.get("every_n_subsets")
     if not isinstance(every_n, int) or every_n <= 0:
         _err(errors, "pipeline.eval_after_subset.every_n_subsets must be > 0")
+    run_on_final = eval_after.get("run_on_final_subset")
+    if run_on_final is not None and not isinstance(run_on_final, bool):
+        _err(errors, "pipeline.eval_after_subset.run_on_final_subset must be a boolean")
+    eval_runtime = eval_after.get("runtime")
+    if not isinstance(eval_runtime, str) or not eval_runtime.strip():
+        _err(errors, "pipeline.eval_after_subset.runtime must be a non-empty string")
+    source_col = eval_after.get("source_column")
+    if not isinstance(source_col, str) or not source_col.strip():
+        _err(errors, "pipeline.eval_after_subset.source_column must be a non-empty string")
+    ref_col = eval_after.get("reference_column")
+    if not isinstance(ref_col, str) or not ref_col.strip():
+        _err(errors, "pipeline.eval_after_subset.reference_column must be a non-empty string")
+    eval_metrics = eval_after.get("metrics")
+    if not isinstance(eval_metrics, list) or not eval_metrics:
+        _err(errors, "pipeline.eval_after_subset.metrics must be a non-empty list")
+    else:
+        allowed_eval_metrics = {"metricx24_ref", "BLEU", "chrF"}
+        for idx, metric in enumerate(eval_metrics):
+            if not isinstance(metric, str) or not metric.strip():
+                _err(errors, f"pipeline.eval_after_subset.metrics[{idx}] must be a non-empty string")
+                continue
+            normalized = metric.strip().lower()
+            canonical = (
+                "metricx24_ref"
+                if normalized == "metricx24_ref"
+                else "BLEU"
+                if normalized == "bleu"
+                else "chrF"
+                if normalized == "chrf"
+                else None
+            )
+            if canonical is None or canonical not in allowed_eval_metrics:
+                _err(
+                    errors,
+                    "pipeline.eval_after_subset.metrics must contain only: metricx24_ref, BLEU, chrF",
+                )
+                break
+    eval_metric_settings = eval_after.get("metric_settings")
+    if eval_metric_settings is not None and not isinstance(eval_metric_settings, Mapping):
+        _err(errors, "pipeline.eval_after_subset.metric_settings must be a mapping")
     stage_cfg = _as_dict(pipeline.get("stage", {}), "pipeline.stage", errors)
     max_subsets = stage_cfg.get("max_subsets")
     if max_subsets is not None and (isinstance(max_subsets, bool) or not isinstance(max_subsets, int) or max_subsets <= 0):

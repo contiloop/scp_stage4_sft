@@ -223,6 +223,33 @@ def _trainer_device_flags() -> tuple[bool, bool]:
     return (not bf16_supported), bf16_supported
 
 
+def _resolve_wandb_report_to(logging_cfg: Mapping[str, Any]) -> list[str]:
+    report_to_raw = logging_cfg.get("report_to", [])
+    report_to: list[str] = list(report_to_raw) if isinstance(report_to_raw, (list, tuple)) else []
+    wandb_cfg = _as_dict(logging_cfg.get("wandb", {}))
+    if "wandb" in report_to and wandb_cfg.get("enabled", True):
+        try:
+            import wandb  # type: ignore[import-untyped]
+
+            init_kwargs: dict[str, Any] = {"project": str(wandb_cfg.get("project", "scp_main"))}
+            entity = wandb_cfg.get("entity")
+            if entity:
+                init_kwargs["entity"] = str(entity)
+            tags = wandb_cfg.get("tags")
+            if isinstance(tags, list):
+                init_kwargs["tags"] = [str(t) for t in tags]
+            notes = wandb_cfg.get("notes", "")
+            if notes:
+                init_kwargs["notes"] = str(notes)
+            run_name = logging_cfg.get("run_name")
+            if run_name:
+                init_kwargs["name"] = str(run_name)
+            wandb.init(**init_kwargs)
+        except Exception:
+            report_to = [r for r in report_to if r != "wandb"]
+    return report_to
+
+
 def _instantiate_trainer(
     *,
     model: Any,
@@ -231,11 +258,14 @@ def _instantiate_trainer(
     output_dir: Path,
     train_cfg: Mapping[str, Any],
     max_seq_length: int,
+    logging_cfg: Mapping[str, Any] | None = None,
 ) -> Any:
     try:
         from trl import SFTTrainer
     except ModuleNotFoundError as exc:
         raise WorkerContractError("trl package is required for SFT training") from exc
+
+    report_to = _resolve_wandb_report_to(logging_cfg or {})
 
     fp16, bf16 = _trainer_device_flags()
     common_train_args: dict[str, Any] = {
@@ -262,7 +292,7 @@ def _instantiate_trainer(
         "max_grad_norm": float(_as_dict(train_cfg.get("optimizer")).get("max_grad_norm", 1.0) or 1.0),
         "logging_steps": 1,
         "save_strategy": "no",
-        "report_to": [],
+        "report_to": report_to,
         "fp16": fp16,
         "bf16": bf16,
     }
@@ -353,6 +383,7 @@ def _run_sft_train(
     train_cfg: Mapping[str, Any],
     seed: int,
     save_merged_checkpoint: bool = True,
+    logging_cfg: Mapping[str, Any] | None = None,
 ) -> tuple[Path, Path | None]:
     model, tokenizer = _load_unsloth_model(runtime)
     model = _ensure_lora_model(model=model, runtime=runtime, lora_cfg=lora_cfg, seed=seed)
@@ -364,6 +395,7 @@ def _run_sft_train(
         output_dir=output_dir,
         train_cfg=train_cfg,
         max_seq_length=runtime.max_seq_length,
+        logging_cfg=logging_cfg,
     )
     trainer.train()
 
@@ -430,6 +462,7 @@ def _collapse_train(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         train_cfg=train_cfg,
         seed=seed,
         save_merged_checkpoint=False,
+        logging_cfg=_as_dict(first.get("logging_config")),
     )
     for item in adapter_tmp.iterdir():
         target = adapter_path / item.name
@@ -504,6 +537,7 @@ def _update_base(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         train_cfg=training_cfg,
         seed=seed,
         save_merged_checkpoint=True,
+        logging_cfg=_as_dict(first.get("logging_config")),
     )
     effective_checkpoint = merged_dir if merged_dir is not None else adapter_dir
     checkpoint_state = {

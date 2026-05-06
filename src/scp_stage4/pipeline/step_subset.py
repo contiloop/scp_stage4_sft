@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import hashlib
 import json
 import logging
@@ -2259,11 +2260,46 @@ def _load_ood_eval_rows(
                 break
 
     if not loaded_rows:
-        searched = ", ".join(str(path) for path in candidates)
-        raise StepSubsetError(
-            "OOD eval dataset not found or empty. "
-            f"dataset={dataset_name!r} searched=[{searched}]"
-        )
+        # Fallback: load directly from data.ood_test CSV source when bundle restore
+        # does not include ood_test.jsonl.
+        ood_cfg = _get_by_dotpath(ctx.cfg, "data.ood_test", {})
+        if not isinstance(ood_cfg, Mapping) or not bool(ood_cfg.get("enabled", False)):
+            searched = ", ".join(str(path) for path in candidates)
+            raise StepSubsetError(
+                "OOD eval dataset not found or empty. "
+                f"dataset={dataset_name!r} searched=[{searched}]"
+            )
+
+        csv_path = Path(str(ood_cfg.get("path", "")))
+        if not csv_path.exists():
+            searched = ", ".join(str(path) for path in candidates)
+            raise StepSubsetError(
+                "OOD eval dataset not found or empty. "
+                f"dataset={dataset_name!r} searched=[{searched}] "
+                f"and csv_path_missing={csv_path}"
+            )
+
+        csv_source_col = str(ood_cfg.get("source_column", source_column or "Source_En"))
+        csv_target_col = str(ood_cfg.get("target_column", reference_column or "Target_Ko"))
+        csv_rows: list[dict[str, Any]] = []
+        with csv_path.open("r", encoding="utf-8", newline="") as handle:
+            reader = csv.DictReader(handle)
+            for idx, row in enumerate(reader):
+                if not isinstance(row, Mapping):
+                    continue
+                source = str(row.get(csv_source_col, "")).strip()
+                target = str(row.get(csv_target_col, "")).strip()
+                if not source:
+                    continue
+                csv_rows.append(
+                    {
+                        "id": f"ood_{idx:06d}",
+                        "source": source,
+                        "target": target,
+                    }
+                )
+        loaded_rows = csv_rows
+        used_path = csv_path
 
     ood_rows: list[dict[str, Any]] = []
     for idx, row in enumerate(loaded_rows):

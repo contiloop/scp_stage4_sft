@@ -236,8 +236,24 @@ def _resolve_wandb_report_to(logging_cfg: Mapping[str, Any]) -> list[str]:
             if entity:
                 init_kwargs["entity"] = str(entity)
             tags = wandb_cfg.get("tags")
+            resolved_tags: list[str] = []
             if isinstance(tags, list):
-                init_kwargs["tags"] = [str(t) for t in tags]
+                resolved_tags.extend(str(t) for t in tags if str(t).strip())
+            phase_value = str(logging_cfg.get("phase", "")).strip()
+            if phase_value:
+                # Keep both detailed and coarse phase tags for filtering.
+                phase_tag = f"phase:{phase_value}"
+                if phase_tag not in resolved_tags:
+                    resolved_tags.append(phase_tag)
+                coarse_tag = None
+                if phase_value == "train-collapse-lora":
+                    coarse_tag = "collapse"
+                elif phase_value == "update-base":
+                    coarse_tag = "update"
+                if coarse_tag and coarse_tag not in resolved_tags:
+                    resolved_tags.append(coarse_tag)
+            if resolved_tags:
+                init_kwargs["tags"] = resolved_tags
             notes = wandb_cfg.get("notes", "")
             if notes:
                 init_kwargs["notes"] = str(notes)
@@ -384,6 +400,7 @@ def _run_sft_train(
     seed: int,
     save_merged_checkpoint: bool = True,
     logging_cfg: Mapping[str, Any] | None = None,
+    phase: str | None = None,
 ) -> tuple[Path, Path | None]:
     model, tokenizer = _load_unsloth_model(runtime)
     model = _ensure_lora_model(model=model, runtime=runtime, lora_cfg=lora_cfg, seed=seed)
@@ -395,7 +412,10 @@ def _run_sft_train(
         output_dir=output_dir,
         train_cfg=train_cfg,
         max_seq_length=runtime.max_seq_length,
-        logging_cfg=logging_cfg,
+        logging_cfg={
+            **_as_dict(logging_cfg or {}),
+            "phase": phase,
+        },
     )
     trainer.train()
 
@@ -463,6 +483,7 @@ def _collapse_train(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         seed=seed,
         save_merged_checkpoint=False,
         logging_cfg=_as_dict(first.get("logging_config")),
+        phase="train-collapse-lora",
     )
     for item in adapter_tmp.iterdir():
         target = adapter_path / item.name
@@ -538,6 +559,7 @@ def _update_base(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         seed=seed,
         save_merged_checkpoint=True,
         logging_cfg=_as_dict(first.get("logging_config")),
+        phase="update-base",
     )
     effective_checkpoint = merged_dir if merged_dir is not None else adapter_dir
     checkpoint_state = {

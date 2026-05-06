@@ -526,3 +526,157 @@ def test_run_stage_runs_eval_after_subset_when_enabled() -> None:
         assert (_run_root(run_id) / "eval" / "ood_test" / "subset_000.summary.json").exists()
     finally:
         _cleanup(run_id)
+
+
+def test_checkpoint_retention_keeps_only_recent_two_subsets(tmp_path: Path, monkeypatch) -> None:
+    run_id = "test_checkpoint_retention_last_two"
+    _cleanup(run_id)
+    try:
+        monkeypatch.chdir(tmp_path)
+        config_path = str(Path(__file__).resolve().parents[1] / "configs" / "scp_stage4.yaml")
+        from scp_stage4.data import write_jsonl
+
+        data_dir = Path("artifacts/data")
+        data_dir.mkdir(parents=True, exist_ok=True)
+        train_rows = []
+        for idx in range(12):
+            train_rows.append(
+                {
+                    "id": f"retention_{idx:03d}",
+                    "dataset": "retention_test",
+                    "source": f"source sentence {idx}",
+                    "metadata": {
+                        "title": None,
+                        "document_type": "other",
+                        "text_role": "body",
+                        "original_id": f"orig_{idx:03d}",
+                        "parent_id": None,
+                        "chunk_idx": None,
+                    },
+                }
+            )
+        write_jsonl(data_dir / "datapool.train.jsonl", train_rows, ensure_ascii=False)
+
+        for subset_idx in range(3):
+            run_subset(
+                config_path=config_path,
+                run_id_override=run_id,
+                subset_idx=subset_idx,
+                subset_size_override=4,
+                use_prepared_data=True,
+                use_sampled_data=False,
+                overrides=["pipeline.subset.shuffle=false"],
+            )
+
+        subset0_train = _run_root(run_id) / "subsets" / "subset_000" / "train_final"
+        subset1_train = _run_root(run_id) / "subsets" / "subset_001" / "train_final"
+        subset2_train = _run_root(run_id) / "subsets" / "subset_002" / "train_final"
+
+        assert not (subset0_train / "main_adapter").exists()
+        assert (subset0_train / "PRUNED_CHECKPOINTS.json").exists()
+        assert (subset1_train / "main_adapter").exists()
+        assert (subset2_train / "main_adapter").exists()
+    finally:
+        _cleanup(run_id)
+
+
+def test_checkpoint_retention_keeps_one_best_plus_last_plus_current(
+    tmp_path: Path, monkeypatch
+) -> None:
+    run_id = "test_checkpoint_retention_best_plus_last"
+    _cleanup(run_id)
+    try:
+        monkeypatch.chdir(tmp_path)
+        config_path = str(Path(__file__).resolve().parents[1] / "configs" / "scp_stage4.yaml")
+        from scp_stage4.data import write_jsonl
+
+        data_dir = Path("artifacts/data")
+        data_dir.mkdir(parents=True, exist_ok=True)
+        train_rows = []
+        for idx in range(12):
+            train_rows.append(
+                {
+                    "id": f"retention_best_{idx:03d}",
+                    "dataset": "retention_test",
+                    "source": f"source sentence {idx}",
+                    "metadata": {
+                        "title": None,
+                        "document_type": "other",
+                        "text_role": "body",
+                        "original_id": f"orig_best_{idx:03d}",
+                        "parent_id": None,
+                        "chunk_idx": None,
+                    },
+                }
+            )
+        write_jsonl(data_dir / "datapool.train.jsonl", train_rows, ensure_ascii=False)
+
+        def _append_eval_metric(subset_idx: int, quality: float) -> None:
+            run_root = _run_root(run_id)
+            run_root.mkdir(parents=True, exist_ok=True)
+            record = {
+                "run_id": run_id,
+                "subset_idx": subset_idx,
+                "phase": "eval-ood",
+                "status": "ok",
+                "metric_group": "ood_eval",
+                "metrics": {"ood/metricx24_ref_quality_mean": quality},
+            }
+            with (run_root / "metrics.jsonl").open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps(record, ensure_ascii=False, sort_keys=True))
+                handle.write("\n")
+
+        run_subset(
+            config_path=config_path,
+            run_id_override=run_id,
+            subset_idx=0,
+            subset_size_override=4,
+            use_prepared_data=True,
+            use_sampled_data=False,
+            overrides=[
+                "pipeline.subset.shuffle=false",
+                "training.checkpoint.keep_last_n=1",
+                "training.checkpoint.keep_best_n=1",
+            ],
+        )
+        _append_eval_metric(0, 23.0)
+
+        run_subset(
+            config_path=config_path,
+            run_id_override=run_id,
+            subset_idx=1,
+            subset_size_override=4,
+            use_prepared_data=True,
+            use_sampled_data=False,
+            overrides=[
+                "pipeline.subset.shuffle=false",
+                "training.checkpoint.keep_last_n=1",
+                "training.checkpoint.keep_best_n=1",
+            ],
+        )
+        _append_eval_metric(1, 10.0)
+
+        run_subset(
+            config_path=config_path,
+            run_id_override=run_id,
+            subset_idx=2,
+            subset_size_override=4,
+            use_prepared_data=True,
+            use_sampled_data=False,
+            overrides=[
+                "pipeline.subset.shuffle=false",
+                "training.checkpoint.keep_last_n=1",
+                "training.checkpoint.keep_best_n=1",
+            ],
+        )
+
+        subset0_train = _run_root(run_id) / "subsets" / "subset_000" / "train_final"
+        subset1_train = _run_root(run_id) / "subsets" / "subset_001" / "train_final"
+        subset2_train = _run_root(run_id) / "subsets" / "subset_002" / "train_final"
+
+        assert (subset0_train / "main_adapter").exists()
+        assert (subset1_train / "main_adapter").exists()
+        assert (subset2_train / "main_adapter").exists()
+        assert not (subset0_train / "PRUNED_CHECKPOINTS.json").exists()
+    finally:
+        _cleanup(run_id)

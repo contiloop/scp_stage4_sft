@@ -575,6 +575,39 @@ def validate_config(cfg: dict[str, Any]) -> None:
                 "training.base_update.lora.target_modules must be either a string or a list of strings",
             )
 
+    checkpoint_cfg = _as_dict(training.get("checkpoint", {}), "training.checkpoint", errors)
+    for key in (
+        "save_after_each_subset",
+        "save_latest_pointer",
+        "keep_subset_checkpoints",
+        "greater_is_better",
+        "keep_final",
+        "save_optimizer_state",
+        "save_collapse_lora",
+        "upload_to_wandb",
+    ):
+        value = checkpoint_cfg.get(key)
+        if value is not None and not isinstance(value, bool):
+            _err(errors, f"training.checkpoint.{key} must be a boolean")
+
+    keep_last_n = checkpoint_cfg.get("keep_last_n")
+    if keep_last_n is not None and (
+        isinstance(keep_last_n, bool) or not isinstance(keep_last_n, int) or keep_last_n <= 0
+    ):
+        _err(errors, "training.checkpoint.keep_last_n must be a positive integer")
+
+    keep_best_n = checkpoint_cfg.get("keep_best_n")
+    if keep_best_n is not None and (
+        isinstance(keep_best_n, bool) or not isinstance(keep_best_n, int) or keep_best_n < 0
+    ):
+        _err(errors, "training.checkpoint.keep_best_n must be a non-negative integer")
+
+    metric_for_best = checkpoint_cfg.get("metric_for_best")
+    if metric_for_best is not None and (
+        not isinstance(metric_for_best, str) or not metric_for_best.strip()
+    ):
+        _err(errors, "training.checkpoint.metric_for_best must be a non-empty string")
+
     local_logging = _as_dict(logging_cfg.get("local", {}), "logging.local", errors)
     for key in ("enabled", "write_effective_config", "write_config_hash"):
         if not isinstance(local_logging.get(key), bool):

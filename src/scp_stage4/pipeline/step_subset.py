@@ -842,6 +842,194 @@ def _latest_checkpoint_ref(ctx: PipelineContext) -> str | None:
     return str(value) if value is not None else None
 
 
+def _checkpoint_retention_keep_last_n(cfg: Mapping[str, Any]) -> int:
+    raw = _get_by_dotpath(cfg, "training.checkpoint.keep_last_n", 2)
+    if isinstance(raw, bool) or not isinstance(raw, int):
+        return 2
+    return max(1, raw)
+
+
+def _checkpoint_retention_keep_best_n(cfg: Mapping[str, Any]) -> int:
+    raw = _get_by_dotpath(cfg, "training.checkpoint.keep_best_n", 1)
+    if isinstance(raw, bool) or not isinstance(raw, int):
+        return 1
+    return max(0, raw)
+
+
+def _checkpoint_retention_metric_for_best(cfg: Mapping[str, Any]) -> str:
+    raw = _get_by_dotpath(cfg, "training.checkpoint.metric_for_best", "ood/metricx24_ref_quality_mean")
+    if not isinstance(raw, str) or not raw.strip():
+        return "ood/metricx24_ref_quality_mean"
+    return raw.strip()
+
+
+def _checkpoint_retention_greater_is_better(cfg: Mapping[str, Any]) -> bool:
+    raw = _get_by_dotpath(cfg, "training.checkpoint.greater_is_better", True)
+    return bool(raw)
+
+
+def _metrics_jsonl_path(ctx: PipelineContext) -> Path:
+    filename = str(_get_by_dotpath(ctx.cfg, "logging.local.metrics_jsonl", "metrics.jsonl"))
+    return ctx.run_root / filename
+
+
+def _best_subset_indices_for_retention(
+    *,
+    ctx: PipelineContext,
+    upto_subset_idx: int,
+) -> list[int]:
+    keep_best_n = _checkpoint_retention_keep_best_n(ctx.cfg)
+    if keep_best_n <= 0:
+        return []
+    metrics_path = _metrics_jsonl_path(ctx)
+    if not metrics_path.exists():
+        return []
+
+    metric_key = _checkpoint_retention_metric_for_best(ctx.cfg)
+    greater_is_better = _checkpoint_retention_greater_is_better(ctx.cfg)
+    score_by_subset: dict[int, float] = {}
+
+    with metrics_path.open("r", encoding="utf-8") as handle:
+        for raw in handle:
+            line = raw.strip()
+            if not line:
+                continue
+            try:
+                parsed = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(parsed, Mapping):
+                continue
+            phase = parsed.get("phase")
+            if phase != "eval-ood":
+                continue
+            subset_value = parsed.get("subset_idx")
+            if isinstance(subset_value, bool) or not isinstance(subset_value, int):
+                continue
+            subset_idx = int(subset_value)
+            if subset_idx >= upto_subset_idx:
+                continue
+            metrics = parsed.get("metrics")
+            if not isinstance(metrics, Mapping):
+                continue
+            metric_value = metrics.get(metric_key)
+            if isinstance(metric_value, bool) or not isinstance(metric_value, (int, float)):
+                continue
+            score = float(metric_value)
+            if not math.isfinite(score):
+                continue
+            score_by_subset[subset_idx] = score
+
+    if not score_by_subset:
+        return []
+
+    sorted_items = sorted(
+        score_by_subset.items(),
+        key=lambda item: (item[1], item[0]),
+        reverse=greater_is_better,
+    )
+    return [subset_idx for subset_idx, _ in sorted_items[:keep_best_n]]
+
+
+def _path_size_bytes(path: Path) -> int:
+    if not path.exists():
+        return 0
+    if path.is_file():
+        return int(path.stat().st_size)
+    total = 0
+    for child in path.rglob("*"):
+        if child.is_file():
+            total += int(child.stat().st_size)
+    return total
+
+
+def _prune_subset_checkpoints_if_configured(ctx: PipelineContext) -> dict[str, int]:
+    current_subset_idx = int(ctx.subset_idx)
+    keep_last_n = _checkpoint_retention_keep_last_n(ctx.cfg)
+    keep_best_n = _checkpoint_retention_keep_best_n(ctx.cfg)
+    metric_for_best = _checkpoint_retention_metric_for_best(ctx.cfg)
+    greater_is_better = _checkpoint_retention_greater_is_better(ctx.cfg)
+
+    preserve_previous = set(range(max(0, current_subset_idx - keep_last_n), current_subset_idx))
+    preserve_best = set(
+        _best_subset_indices_for_retention(ctx=ctx, upto_subset_idx=current_subset_idx)
+    )
+    preserve_subset_indices = set(preserve_previous)
+    preserve_subset_indices.update(preserve_best)
+    preserve_subset_indices.add(current_subset_idx)
+
+    subset_root = ctx.run_root / "subsets"
+    if not subset_root.exists():
+        return {
+            "subset_count": 0,
+            "deleted_count": 0,
+            "freed_bytes": 0,
+            "preserved_subset_count": len(preserve_subset_indices),
+            "preserved_best_count": len(preserve_best),
+        }
+
+    preserve_names = {
+        "train_rows.jsonl",
+        "checkpoint_state.json",
+        "worker_checkpoint_state.json",
+        "PRUNED_CHECKPOINTS.json",
+    }
+    subset_count = 0
+    deleted_count = 0
+    freed_bytes = 0
+
+    for subset_dir in sorted(subset_root.glob("subset_*")):
+        if not subset_dir.is_dir():
+            continue
+        try:
+            subset_num = int(subset_dir.name.split("_")[-1])
+        except ValueError:
+            continue
+        if subset_num in preserve_subset_indices or subset_num >= current_subset_idx:
+            continue
+        train_final_dir = subset_dir / "train_final"
+        if not train_final_dir.exists() or not train_final_dir.is_dir():
+            continue
+
+        removed: list[str] = []
+        for child in sorted(train_final_dir.iterdir()):
+            if child.name in preserve_names:
+                continue
+            freed_bytes += _path_size_bytes(child)
+            if child.is_dir():
+                shutil.rmtree(child)
+            else:
+                child.unlink(missing_ok=True)
+            removed.append(child.name)
+            deleted_count += 1
+        if not removed:
+            continue
+
+        subset_count += 1
+        _write_json_file(
+            train_final_dir / "PRUNED_CHECKPOINTS.json",
+            {
+                "status": "ok",
+                "run_id": ctx.run_id,
+                "subset_idx": subset_num,
+                "retention_keep_last_n": keep_last_n,
+                "retention_keep_best_n": keep_best_n,
+                "retention_metric_for_best": metric_for_best,
+                "retention_greater_is_better": greater_is_better,
+                "preserved_subset_indices": sorted(preserve_subset_indices),
+                "deleted_entries": removed,
+            },
+        )
+
+    return {
+        "subset_count": subset_count,
+        "deleted_count": deleted_count,
+        "freed_bytes": freed_bytes,
+        "preserved_subset_count": len(preserve_subset_indices),
+        "preserved_best_count": len(preserve_best),
+    }
+
+
 def _collapse_adapter_ref(ctx: PipelineContext) -> str:
     state = _read_json_file(_collapse_state_path(ctx))
     if not state or state.get("status") != "ok":
@@ -2007,16 +2195,27 @@ def run_update_base(
     }
     _write_json_file(train_final_dir / "checkpoint_state.json", checkpoint_state)
     _write_json_file(_latest_checkpoint_path(ctx), checkpoint_state)
+    prune_stats = _prune_subset_checkpoints_if_configured(ctx)
 
     ctx.logger.log_event(
         context=_context_for_phase(ctx, "update-base"),
         event_type="phase_completed",
         status="ok",
         artifact_path=f"subsets/subset_{ctx.subset_idx:03d}/train_final/checkpoint_state.json",
+        extras={"checkpoint_prune": prune_stats},
     )
     ctx.logger.log_metrics(
         context=_context_for_phase(ctx, "update-base"),
-        metrics={"subset/train_rows": len(train_rows)},
+        metrics={
+            "subset/train_rows": len(train_rows),
+            "checkpoint/retained_count": int(prune_stats["preserved_subset_count"]),
+            "checkpoint/retained_best_count": int(prune_stats["preserved_best_count"]),
+            "checkpoint/keep_last_n": _checkpoint_retention_keep_last_n(ctx.cfg),
+            "checkpoint/keep_best_n": _checkpoint_retention_keep_best_n(ctx.cfg),
+            "checkpoint/pruned_subset_count": int(prune_stats["subset_count"]),
+            "checkpoint/deleted_count": int(prune_stats["deleted_count"]),
+            "checkpoint/freed_bytes": int(prune_stats["freed_bytes"]),
+        },
         metric_group="subset",
     )
     _touch_failure_layout(ctx)

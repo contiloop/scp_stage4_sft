@@ -61,6 +61,19 @@
       "data": {
         "use_no_change": true
       }
+    },
+    "checkpoint": {
+      "save_after_each_subset": true,
+      "save_latest_pointer": true,
+      "keep_subset_checkpoints": true,
+      "keep_last_n": 1,
+      "keep_best_n": 1,
+      "metric_for_best": "ood/metricx24_ref_quality_mean",
+      "greater_is_better": true,
+      "keep_final": true,
+      "save_optimizer_state": true,
+      "save_collapse_lora": false,
+      "upload_to_wandb": false
     }
   }
 }

@@ -14,7 +14,8 @@
       "learning_rate": 0.0025,
       "num_train_epochs": 1,
       "dropout": 0.0,
-      "bias": "none"
+      "bias": "none",
+      "response_template": "### Response:\n"
     },
     "base_update": {
       "mode": "full_weight",
@@ -56,7 +57,7 @@
         "gradient_accumulation_steps": 4,
         "per_device_eval_batch_size": 8,
         "packing": false,
-        "response_template": null
+        "response_template": "### Response:\n"
       },
       "data": {
         "use_no_change": true

@@ -413,6 +413,7 @@ training:
     num_train_epochs: 1
     dropout: 0.0
     bias: none
+    response_template: "### Response:\n"
 
   base_update:
     mode: lora       # lora | full_weight
@@ -454,7 +455,7 @@ training:
       gradient_accumulation_steps: 4
       per_device_eval_batch_size: 8
       packing: false
-      response_template: null
+      response_template: "### Response:\n"
 
     data:
       use_no_change: true
@@ -489,6 +490,10 @@ Rules:
 - collapse LoRA must not be merged into the base model
 - base update is cumulative across subsets
 - `base_update.mode: full_weight` must use the same optimizer/batching schema unless overridden
+- `training.collapse_lora.response_template` or `training.collapse_lora.batching.response_template` must be a non-empty string
+- `training.base_update.batching.response_template` or `training.base_update.response_template` must be a non-empty string
+- response-only masking must be strict: if TRL `DataCollatorForCompletionOnlyLM` import fails, training must fail
+- response-only masking must be strict: if `SFTTrainer` does not support `data_collator`, training must fail
 - `training.base_update.lora.target_modules` may be either:
   - a string shortcut such as `all-linear`
   - a list of module names (for example attention/MLP + DeltaNet projections)

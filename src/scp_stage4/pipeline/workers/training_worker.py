@@ -100,16 +100,16 @@ def _resolve_train_runtime(row: Mapping[str, Any]) -> _TrainRuntime:
     )
 
 
-def _format_sft_text(source: str, target: str) -> str:
+def _format_sft_text(source: str, target: str, *, response_template: str) -> str:
     return (
         "### Instruction:\n"
         "Translate the English source into Korean.\n\n"
         f"### Source:\n{source}\n\n"
-        f"### Response:\n{target}"
+        f"{response_template}{target}"
     )
 
 
-def _build_dataset(rows: list[dict[str, Any]], tokenizer: Any) -> Any:
+def _build_dataset(rows: list[dict[str, Any]], tokenizer: Any, *, response_template: str) -> Any:
     try:
         from datasets import Dataset
     except ModuleNotFoundError as exc:
@@ -122,7 +122,16 @@ def _build_dataset(rows: list[dict[str, Any]], tokenizer: Any) -> Any:
         target = str(row.get("target", "")).strip()
         if not source or not target:
             continue
-        payload.append({"text": _format_sft_text(source, target) + (eos if eos else "")})
+        payload.append(
+            {
+                "text": _format_sft_text(
+                    source,
+                    target,
+                    response_template=response_template,
+                )
+                + (eos if eos else ""),
+            }
+        )
     if not payload:
         raise WorkerContractError("no valid source/target rows for training")
     return Dataset.from_list(payload)
@@ -266,6 +275,37 @@ def _resolve_wandb_report_to(logging_cfg: Mapping[str, Any]) -> list[str]:
     return report_to
 
 
+def _resolve_response_template(train_cfg: Mapping[str, Any], *, phase: str) -> str:
+    batching_cfg = _as_dict(train_cfg.get("batching"))
+    candidate = batching_cfg.get("response_template")
+    if not isinstance(candidate, str) or not candidate.strip():
+        candidate = train_cfg.get("response_template")
+    if not isinstance(candidate, str) or not candidate.strip():
+        raise WorkerContractError(
+            f"{phase} requires non-empty response_template config "
+            "(training.<phase>.batching.response_template or training.<phase>.response_template)"
+        )
+    return candidate
+
+
+def _build_response_only_collator(tokenizer: Any, *, response_template: str) -> Any:
+    try:
+        from trl import DataCollatorForCompletionOnlyLM
+    except ImportError as exc:
+        raise WorkerContractError(
+            "trl.DataCollatorForCompletionOnlyLM is required for response-only masking"
+        ) from exc
+    try:
+        return DataCollatorForCompletionOnlyLM(
+            response_template=response_template,
+            tokenizer=tokenizer,
+        )
+    except Exception as exc:
+        raise WorkerContractError(
+            "failed to initialize DataCollatorForCompletionOnlyLM with configured response_template"
+        ) from exc
+
+
 def _instantiate_trainer(
     *,
     model: Any,
@@ -274,12 +314,24 @@ def _instantiate_trainer(
     output_dir: Path,
     train_cfg: Mapping[str, Any],
     max_seq_length: int,
+    response_template: str,
     logging_cfg: Mapping[str, Any] | None = None,
 ) -> Any:
     try:
         from trl import SFTTrainer
     except ModuleNotFoundError as exc:
         raise WorkerContractError("trl package is required for SFT training") from exc
+
+    collator = _build_response_only_collator(
+        tokenizer,
+        response_template=response_template,
+    )
+    init_sig = inspect.signature(SFTTrainer.__init__)
+    if "data_collator" not in init_sig.parameters:
+        raise WorkerContractError(
+            "installed TRL SFTTrainer does not accept data_collator; "
+            "response-only masking cannot be guaranteed"
+        )
 
     report_to = _resolve_wandb_report_to(logging_cfg or {})
 
@@ -333,8 +385,7 @@ def _instantiate_trainer(
             sft_args["max_seq_length"] = max_seq_length
             args_obj = SFTConfig(**sft_args)
 
-        init_sig = inspect.signature(SFTTrainer.__init__)
-        kwargs = {
+        kwargs: dict[str, Any] = {
             "model": model,
             "train_dataset": dataset,
             "args": args_obj,
@@ -343,6 +394,7 @@ def _instantiate_trainer(
             kwargs["processing_class"] = tokenizer
         elif "tokenizer" in init_sig.parameters:
             kwargs["tokenizer"] = tokenizer
+        kwargs["data_collator"] = collator
         trainer = SFTTrainer(**kwargs)
     except Exception as exc:
         trainer_errors.append(f"SFTConfig path failed: {exc}")
@@ -355,7 +407,6 @@ def _instantiate_trainer(
         from transformers import TrainingArguments
 
         args_obj = TrainingArguments(**common_train_args)
-        init_sig = inspect.signature(SFTTrainer.__init__)
         kwargs = {
             "model": model,
             "train_dataset": dataset,
@@ -365,6 +416,7 @@ def _instantiate_trainer(
             kwargs["processing_class"] = tokenizer
         elif "tokenizer" in init_sig.parameters:
             kwargs["tokenizer"] = tokenizer
+        kwargs["data_collator"] = collator
         if "dataset_text_field" in init_sig.parameters:
             kwargs["dataset_text_field"] = "text"
         if "max_seq_length" in init_sig.parameters:
@@ -411,12 +463,13 @@ def _run_sft_train(
     logging_cfg: Mapping[str, Any] | None = None,
     phase: str | None = None,
 ) -> tuple[Path, Path | None]:
+    response_template = _resolve_response_template(train_cfg, phase=phase or "training")
     model, tokenizer = _load_unsloth_model(runtime)
     if mode == "full_weight":
         model = _prepare_full_weight_model(model)
     else:
         model = _ensure_lora_model(model=model, runtime=runtime, lora_cfg=lora_cfg, seed=seed)
-    dataset = _build_dataset(rows, tokenizer)
+    dataset = _build_dataset(rows, tokenizer, response_template=response_template)
     trainer = _instantiate_trainer(
         model=model,
         tokenizer=tokenizer,
@@ -424,6 +477,7 @@ def _run_sft_train(
         output_dir=output_dir,
         train_cfg=train_cfg,
         max_seq_length=runtime.max_seq_length,
+        response_template=response_template,
         logging_cfg={
             **_as_dict(logging_cfg or {}),
             "phase": phase,
@@ -463,6 +517,7 @@ def _collapse_train(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     adapter_path.mkdir(parents=True, exist_ok=True)
 
     collapse_cfg = _as_dict(first.get("training_config"))
+    response_template = _resolve_response_template(collapse_cfg, phase="train-collapse-lora")
     # Collapse config does not include target modules by default; use project baseline.
     lora_cfg = {
         "rank": collapse_cfg.get("rank", 4),
@@ -488,7 +543,9 @@ def _collapse_train(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
             "per_device_train_batch_size": 1,
             "gradient_accumulation_steps": 1,
             "packing": False,
+            "response_template": response_template,
         },
+        "response_template": response_template,
     }
 
     # Save collapse adapter as output_dir/main_adapter first, then move files up.

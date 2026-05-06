@@ -160,6 +160,19 @@ def _validate_training_runtime(training: dict[str, Any], errors: list[str]) -> N
                 )
 
 
+def _resolve_training_response_template(
+    section_cfg: Mapping[str, Any],
+) -> Any:
+    if not isinstance(section_cfg, Mapping):
+        return None
+    batching_cfg = section_cfg.get("batching")
+    if isinstance(batching_cfg, Mapping):
+        candidate = batching_cfg.get("response_template")
+        if isinstance(candidate, str) and candidate.strip():
+            return candidate
+    return section_cfg.get("response_template")
+
+
 def validate_config(cfg: dict[str, Any]) -> None:
     errors: list[str] = []
 
@@ -551,10 +564,23 @@ def validate_config(cfg: dict[str, Any]) -> None:
     if training.get("backend") != "unsloth":
         _err(errors, "training.backend must be 'unsloth'")
     _validate_training_runtime(training, errors)
+    collapse_lora = _as_dict(training.get("collapse_lora", {}), "training.collapse_lora", errors)
+    collapse_response_template = _resolve_training_response_template(collapse_lora)
+    if not isinstance(collapse_response_template, str) or not collapse_response_template.strip():
+        _err(
+            errors,
+            "training.collapse_lora.response_template (or training.collapse_lora.batching.response_template) must be a non-empty string",
+        )
     base_update = _as_dict(training.get("base_update", {}), "training.base_update", errors)
     base_update_mode = base_update.get("mode")
     if base_update_mode not in {"lora", "full_weight"}:
         _err(errors, "training.base_update.mode must be 'lora' or 'full_weight'")
+    base_response_template = _resolve_training_response_template(base_update)
+    if not isinstance(base_response_template, str) or not base_response_template.strip():
+        _err(
+            errors,
+            "training.base_update.batching.response_template (or training.base_update.response_template) must be a non-empty string",
+        )
     lora_cfg = _as_dict(base_update.get("lora", {}), "training.base_update.lora", errors)
     target_modules = lora_cfg.get("target_modules")
     if target_modules is not None:

@@ -188,6 +188,18 @@ class ConfigValidationTests(unittest.TestCase):
         with self.assertRaises(ConfigValidationError):
             validate_config(cfg)
 
+    def test_training_collapse_response_template_is_required(self) -> None:
+        cfg = compose_config("configs/scp_stage4.yaml")
+        cfg["training"]["collapse_lora"]["response_template"] = ""
+        with self.assertRaises(ConfigValidationError):
+            validate_config(cfg)
+
+    def test_training_base_update_response_template_is_required(self) -> None:
+        cfg = compose_config("configs/scp_stage4.yaml")
+        cfg["training"]["base_update"]["batching"]["response_template"] = ""
+        with self.assertRaises(ConfigValidationError):
+            validate_config(cfg)
+
 
 if __name__ == "__main__":
     unittest.main()

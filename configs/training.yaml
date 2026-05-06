@@ -17,7 +17,7 @@
       "bias": "none"
     },
     "base_update": {
-      "mode": "lora",
+      "mode": "full_weight",
       "persistence": "cumulative",
       "save_after_each_subset": true,
       "num_train_epochs": 1,

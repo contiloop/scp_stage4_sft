@@ -552,7 +552,8 @@ def validate_config(cfg: dict[str, Any]) -> None:
         _err(errors, "training.backend must be 'unsloth'")
     _validate_training_runtime(training, errors)
     base_update = _as_dict(training.get("base_update", {}), "training.base_update", errors)
-    if base_update.get("mode") not in {"lora", "full_weight"}:
+    base_update_mode = base_update.get("mode")
+    if base_update_mode not in {"lora", "full_weight"}:
         _err(errors, "training.base_update.mode must be 'lora' or 'full_weight'")
     lora_cfg = _as_dict(base_update.get("lora", {}), "training.base_update.lora", errors)
     target_modules = lora_cfg.get("target_modules")

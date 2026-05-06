@@ -390,6 +390,14 @@ def _save_merged_checkpoint(model: Any, tokenizer: Any, output_dir: Path) -> Pat
     return merged_dir
 
 
+def _prepare_full_weight_model(model: Any) -> Any:
+    if hasattr(model, "gradient_checkpointing_enable"):
+        model.gradient_checkpointing_enable()
+    for param in model.parameters():
+        param.requires_grad = True
+    return model
+
+
 def _run_sft_train(
     *,
     rows: list[dict[str, Any]],
@@ -398,12 +406,16 @@ def _run_sft_train(
     lora_cfg: Mapping[str, Any],
     train_cfg: Mapping[str, Any],
     seed: int,
+    mode: str = "lora",
     save_merged_checkpoint: bool = True,
     logging_cfg: Mapping[str, Any] | None = None,
     phase: str | None = None,
 ) -> tuple[Path, Path | None]:
     model, tokenizer = _load_unsloth_model(runtime)
-    model = _ensure_lora_model(model=model, runtime=runtime, lora_cfg=lora_cfg, seed=seed)
+    if mode == "full_weight":
+        model = _prepare_full_weight_model(model)
+    else:
+        model = _ensure_lora_model(model=model, runtime=runtime, lora_cfg=lora_cfg, seed=seed)
     dataset = _build_dataset(rows, tokenizer)
     trainer = _instantiate_trainer(
         model=model,
@@ -419,15 +431,22 @@ def _run_sft_train(
     )
     trainer.train()
 
-    adapter_dir = output_dir / "main_adapter"
-    adapter_dir.mkdir(parents=True, exist_ok=True)
-    model.save_pretrained(str(adapter_dir))
-    tokenizer.save_pretrained(str(adapter_dir))
+    if mode == "full_weight":
+        checkpoint_dir = output_dir / "full_weight_model"
+        checkpoint_dir.mkdir(parents=True, exist_ok=True)
+        model.save_pretrained(str(checkpoint_dir))
+        tokenizer.save_pretrained(str(checkpoint_dir))
+        return checkpoint_dir, None
+    else:
+        adapter_dir = output_dir / "main_adapter"
+        adapter_dir.mkdir(parents=True, exist_ok=True)
+        model.save_pretrained(str(adapter_dir))
+        tokenizer.save_pretrained(str(adapter_dir))
 
-    merged_dir: Path | None = None
-    if save_merged_checkpoint:
-        merged_dir = _save_merged_checkpoint(model, tokenizer, output_dir)
-    return adapter_dir, merged_dir
+        merged_dir: Path | None = None
+        if save_merged_checkpoint:
+            merged_dir = _save_merged_checkpoint(model, tokenizer, output_dir)
+        return adapter_dir, merged_dir
 
 
 def _phase(rows: list[dict[str, Any]]) -> str:
@@ -542,6 +561,7 @@ def _update_base(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     output_dir.mkdir(parents=True, exist_ok=True)
 
     training_cfg = _as_dict(first.get("training_config"))
+    update_mode = str(training_cfg.get("mode", "lora"))
     base_lora_cfg = _as_dict(training_cfg.get("lora"))
     lora_cfg = {
         "rank": base_lora_cfg.get("rank", 16),
@@ -557,18 +577,23 @@ def _update_base(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         lora_cfg=lora_cfg,
         train_cfg=training_cfg,
         seed=seed,
-        save_merged_checkpoint=True,
+        mode=update_mode,
+        save_merged_checkpoint=(update_mode != "full_weight"),
         logging_cfg=_as_dict(first.get("logging_config")),
         phase="update-base",
     )
     effective_checkpoint = merged_dir if merged_dir is not None else adapter_dir
-    checkpoint_state = {
+    checkpoint_state: dict[str, Any] = {
         "status": "ok",
-        "adapter_path": str(adapter_dir),
-        "merged_checkpoint_path": str(merged_dir) if merged_dir is not None else None,
+        "mode": update_mode,
         "trained_rows": len(rows),
         "backend": "unsloth",
     }
+    if update_mode == "full_weight":
+        checkpoint_state["full_weight_path"] = str(adapter_dir)
+    else:
+        checkpoint_state["adapter_path"] = str(adapter_dir)
+        checkpoint_state["merged_checkpoint_path"] = str(merged_dir) if merged_dir is not None else None
     (output_dir / "worker_checkpoint_state.json").write_text(
         json.dumps(checkpoint_state, ensure_ascii=False, sort_keys=True, indent=2) + "\n",
         encoding="utf-8",

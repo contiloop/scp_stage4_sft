@@ -282,6 +282,70 @@ def test_run_subset_with_subprocess_runtimes() -> None:
         _cleanup(run_id)
 
 
+def test_run_subset_with_multi_gpu_inference_shards_merges_deterministically() -> None:
+    run_id = "test_step_subset_multi_gpu_infer_shards"
+    _cleanup(run_id)
+    try:
+        run_prepare_data(config_path="configs/scp_stage4.yaml")
+        inference_cmd = json.dumps(
+            [sys.executable, "-m", "scp_stage4.pipeline.workers.mock_inference_worker"]
+        )
+        qe_cmd = json.dumps([sys.executable, "-m", "scp_stage4.pipeline.workers.mock_qe_worker"])
+        api_cmd = json.dumps([sys.executable, "-m", "scp_stage4.pipeline.workers.mock_api_worker"])
+        training_cmd = json.dumps(
+            [sys.executable, "-m", "scp_stage4.pipeline.workers.mock_training_worker"]
+        )
+
+        run_subset(
+            config_path="configs/scp_stage4.yaml",
+            run_id_override=run_id,
+            subset_idx=0,
+            subset_size_override=11,
+            use_prepared_data=False,
+            overrides=[
+                "inference.runtime.mode=subprocess",
+                f"inference.runtime.subprocess.command={inference_cmd}",
+                "inference.runtime.multi_gpu.enabled=true",
+                "inference.runtime.multi_gpu.gpu_ids=[0,1]",
+                "inference.runtime.multi_gpu.shard_strategy=row_id_hash",
+                "qe.runtime.mode=subprocess",
+                f"qe.runtime.subprocess.command={qe_cmd}",
+                "external_api.runtime.mode=subprocess",
+                f"external_api.runtime.subprocess.command={api_cmd}",
+                "training.runtime.mode=subprocess",
+                f"training.runtime.subprocess.collapse_command={training_cmd}",
+                f"training.runtime.subprocess.unload_command={training_cmd}",
+                f"training.runtime.subprocess.update_command={training_cmd}",
+            ],
+        )
+
+        subset_root = _subset_root(run_id)
+        runtime_io = subset_root / "runtime_io"
+        input_rows = read_jsonl(subset_root / "input.jsonl")
+        q1_rows = read_jsonl(subset_root / "q1.jsonl")
+        q2_rows = read_jsonl(subset_root / "q2.jsonl")
+
+        assert len(input_rows) > 1
+        assert [row["id"] for row in q1_rows] == [row["id"] for row in input_rows]
+        assert [row["id"] for row in q2_rows] == [row["id"] for row in input_rows]
+        assert all(str(row["mt_q1"]).startswith("KO_Q1::") for row in q1_rows)
+        assert all(str(row["mt_q2"]).startswith("KO_Q2::") for row in q2_rows)
+
+        q1_input_parts = sorted(runtime_io.glob("infer-q1.input.part*.jsonl"))
+        q1_output_parts = sorted(runtime_io.glob("infer-q1.output.part*.jsonl"))
+        q2_input_parts = sorted(runtime_io.glob("infer-q2.input.part*.jsonl"))
+        q2_output_parts = sorted(runtime_io.glob("infer-q2.output.part*.jsonl"))
+
+        assert q1_input_parts, "infer-q1 shard input parts should exist"
+        assert q1_output_parts, "infer-q1 shard output parts should exist"
+        assert q2_input_parts, "infer-q2 shard input parts should exist"
+        assert q2_output_parts, "infer-q2 shard output parts should exist"
+        assert len(q1_input_parts) <= 2
+        assert len(q2_input_parts) <= 2
+    finally:
+        _cleanup(run_id)
+
+
 def test_infer_q2_requires_collapse_adapter_state() -> None:
     run_id = "test_step_subset_require_collapse_before_q2"
     _cleanup(run_id)

@@ -712,13 +712,22 @@ def _generate_responses(
     responses: list[dict[str, Any]] = []
     for item in ordered_items:
         req_id = str(item.request.get("id", ""))
+        order_idx = int(item.order_idx)
         mt = resolved_mt.get(item.order_idx)
         if mt is None:
             responses.append(
-                {"id": req_id, "status": "failed", "mt": "", "error": "missing generated text"}
+                {
+                    "id": req_id,
+                    "order_idx": order_idx,
+                    "status": "failed",
+                    "mt": "",
+                    "error": "missing generated text",
+                }
             )
             continue
-        responses.append({"id": req_id, "status": "ok", "mt": mt, "error": None})
+        responses.append(
+            {"id": req_id, "order_idx": order_idx, "status": "ok", "mt": mt, "error": None}
+        )
 
     metrics = {
         "batch_count": len(batches),
@@ -770,11 +779,12 @@ def main(argv: list[str] | None = None) -> int:
         responses = [
             {
                 "id": str(row.get("id", "")),
+                "order_idx": int(row.get("order_idx", idx)),
                 "status": "failed",
                 "mt": "",
                 "error": str(exc),
             }
-            for row in requests
+            for idx, row in enumerate(requests)
         ]
 
     validate_phase_response_rows(responses, schema=schema, context="inference")

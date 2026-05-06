@@ -36,6 +36,7 @@ _QE_RUNTIME_MODES = {"mock", "subprocess"}
 _API_RUNTIME_MODES = {"mock", "subprocess"}
 _TRAINING_RUNTIME_MODES = {"mock", "subprocess"}
 _PREPARE_DATA_INTERMEDIATE_FORMATS = {"parquet", "jsonl"}
+_INFERENCE_MULTI_GPU_SHARD_STRATEGIES = {"order_split", "row_id_hash"}
 
 
 def _err(errors: list[str], message: str) -> None:
@@ -410,6 +411,43 @@ def validate_config(cfg: dict[str, Any]) -> None:
         _err(
             errors,
             "inference.runtime.unsloth.fallback_to_transformers must be a boolean",
+        )
+    multi_gpu_runtime = _as_dict(
+        inference_runtime.get("multi_gpu", {}),
+        "inference.runtime.multi_gpu",
+        errors,
+    )
+    multi_gpu_enabled = multi_gpu_runtime.get("enabled")
+    if multi_gpu_enabled is not None and not isinstance(multi_gpu_enabled, bool):
+        _err(errors, "inference.runtime.multi_gpu.enabled must be a boolean")
+    shard_strategy = multi_gpu_runtime.get("shard_strategy", "order_split")
+    if (
+        shard_strategy is not None
+        and (
+            not isinstance(shard_strategy, str)
+            or shard_strategy not in _INFERENCE_MULTI_GPU_SHARD_STRATEGIES
+        )
+    ):
+        _err(
+            errors,
+            "inference.runtime.multi_gpu.shard_strategy must be one of: "
+            + ", ".join(sorted(_INFERENCE_MULTI_GPU_SHARD_STRATEGIES)),
+        )
+    gpu_ids = multi_gpu_runtime.get("gpu_ids")
+    if gpu_ids is not None:
+        if not isinstance(gpu_ids, list):
+            _err(errors, "inference.runtime.multi_gpu.gpu_ids must be a list of integers")
+        else:
+            for idx, gpu_id in enumerate(gpu_ids):
+                if isinstance(gpu_id, bool) or not isinstance(gpu_id, int) or gpu_id < 0:
+                    _err(
+                        errors,
+                        f"inference.runtime.multi_gpu.gpu_ids[{idx}] must be a non-negative integer",
+                    )
+    if multi_gpu_enabled is True and (not isinstance(gpu_ids, list) or not gpu_ids):
+        _err(
+            errors,
+            "inference.runtime.multi_gpu.enabled=true requires non-empty gpu_ids",
         )
 
     throughput_cfg = _as_dict(inference.get("throughput", {}), "inference.throughput", errors)

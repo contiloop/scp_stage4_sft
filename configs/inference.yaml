@@ -6,6 +6,11 @@
         "enabled": true,
         "fallback_to_transformers": false
       },
+      "multi_gpu": {
+        "enabled": false,
+        "gpu_ids": [0, 1],
+        "shard_strategy": "order_split"
+      },
       "subprocess": {
         "command": null
       }

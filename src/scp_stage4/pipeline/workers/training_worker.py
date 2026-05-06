@@ -13,6 +13,7 @@ from __future__ import annotations
 import hashlib
 import inspect
 import json
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
@@ -45,6 +46,15 @@ class _TrainRuntime:
     trust_remote_code: bool
 
 
+@dataclass(frozen=True)
+class _DDPRuntime:
+    enabled: bool
+    local_rank: int
+    rank: int
+    world_size: int
+    is_main_process: bool
+
+
 def _as_dict(value: Any) -> dict[str, Any]:
     return dict(value) if isinstance(value, Mapping) else {}
 
@@ -70,6 +80,90 @@ def _dtype_from_config(dtype_value: Any) -> Any:
     if text in {"fp32", "float32"}:
         return torch.float32
     return None
+
+
+def _env_int(name: str, default: int) -> int:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        return default
+
+
+def _resolve_ddp_runtime() -> _DDPRuntime:
+    world_size = max(1, _env_int("WORLD_SIZE", 1))
+    rank = _env_int("RANK", 0)
+    local_rank = _env_int("LOCAL_RANK", 0)
+    enabled = world_size > 1 or ("LOCAL_RANK" in os.environ and "RANK" in os.environ)
+    if not enabled:
+        return _DDPRuntime(
+            enabled=False,
+            local_rank=0,
+            rank=0,
+            world_size=1,
+            is_main_process=True,
+        )
+    return _DDPRuntime(
+        enabled=True,
+        local_rank=max(0, local_rank),
+        rank=max(0, rank),
+        world_size=max(1, world_size),
+        is_main_process=(rank == 0),
+    )
+
+
+def _init_ddp_runtime() -> _DDPRuntime:
+    ddp = _resolve_ddp_runtime()
+    if not ddp.enabled:
+        return ddp
+
+    try:
+        import torch
+        import torch.distributed as dist
+    except ModuleNotFoundError as exc:
+        raise WorkerContractError("torch distributed is required for DDP training runtime") from exc
+
+    if not dist.is_available():
+        raise WorkerContractError("torch.distributed is not available for DDP runtime")
+
+    if torch.cuda.is_available():
+        torch.cuda.set_device(ddp.local_rank)
+        backend = "nccl"
+    else:
+        backend = "gloo"
+
+    if not dist.is_initialized():
+        dist.init_process_group(
+            backend=backend,
+            init_method="env://",
+            rank=ddp.rank,
+            world_size=ddp.world_size,
+        )
+    return ddp
+
+
+def _ddp_barrier(ddp: _DDPRuntime) -> None:
+    if not ddp.enabled:
+        return
+    try:
+        import torch.distributed as dist
+    except ModuleNotFoundError:
+        return
+    if dist.is_available() and dist.is_initialized():
+        dist.barrier()
+
+
+def _shutdown_ddp_runtime(ddp: _DDPRuntime) -> None:
+    if not ddp.enabled:
+        return
+    try:
+        import torch.distributed as dist
+    except ModuleNotFoundError:
+        return
+    if dist.is_available() and dist.is_initialized():
+        dist.destroy_process_group()
 
 
 def _resolve_train_runtime(row: Mapping[str, Any]) -> _TrainRuntime:
@@ -232,9 +326,15 @@ def _trainer_device_flags() -> tuple[bool, bool]:
     return (not bf16_supported), bf16_supported
 
 
-def _resolve_wandb_report_to(logging_cfg: Mapping[str, Any]) -> list[str]:
+def _resolve_wandb_report_to(
+    logging_cfg: Mapping[str, Any],
+    *,
+    is_main_process: bool,
+) -> list[str]:
     report_to_raw = logging_cfg.get("report_to", [])
     report_to: list[str] = list(report_to_raw) if isinstance(report_to_raw, (list, tuple)) else []
+    if not is_main_process:
+        return [target for target in report_to if target != "wandb"]
     wandb_cfg = _as_dict(logging_cfg.get("wandb", {}))
     if "wandb" in report_to and wandb_cfg.get("enabled", True):
         try:
@@ -316,6 +416,7 @@ def _instantiate_trainer(
     max_seq_length: int,
     response_template: str,
     logging_cfg: Mapping[str, Any] | None = None,
+    is_main_process: bool = True,
 ) -> Any:
     try:
         from trl import SFTTrainer
@@ -333,7 +434,10 @@ def _instantiate_trainer(
             "response-only masking cannot be guaranteed"
         )
 
-    report_to = _resolve_wandb_report_to(logging_cfg or {})
+    report_to = _resolve_wandb_report_to(
+        logging_cfg or {},
+        is_main_process=is_main_process,
+    )
 
     fp16, bf16 = _trainer_device_flags()
     common_train_args: dict[str, Any] = {
@@ -363,6 +467,7 @@ def _instantiate_trainer(
         "report_to": report_to,
         "fp16": fp16,
         "bf16": bf16,
+        "ddp_find_unused_parameters": False,
     }
 
     trainer = None
@@ -434,12 +539,19 @@ def _instantiate_trainer(
 def _save_merged_checkpoint(model: Any, tokenizer: Any, output_dir: Path) -> Path:
     merged_dir = output_dir / "merged_model"
     merged_dir.mkdir(parents=True, exist_ok=True)
-    merged = model
-    if hasattr(model, "merge_and_unload"):
-        merged = model.merge_and_unload()
+    merged = _unwrap_model(model)
+    if hasattr(merged, "merge_and_unload"):
+        merged = merged.merge_and_unload()
     merged.save_pretrained(str(merged_dir))
     tokenizer.save_pretrained(str(merged_dir))
     return merged_dir
+
+
+def _unwrap_model(model: Any) -> Any:
+    unwrapped = model
+    if hasattr(unwrapped, "module"):
+        return getattr(unwrapped, "module")
+    return unwrapped
 
 
 def _prepare_full_weight_model(model: Any) -> Any:
@@ -462,6 +574,7 @@ def _run_sft_train(
     save_merged_checkpoint: bool = True,
     logging_cfg: Mapping[str, Any] | None = None,
     phase: str | None = None,
+    is_main_process: bool = True,
 ) -> tuple[Path, Path | None]:
     response_template = _resolve_response_template(train_cfg, phase=phase or "training")
     model, tokenizer = _load_unsloth_model(runtime)
@@ -482,23 +595,28 @@ def _run_sft_train(
             **_as_dict(logging_cfg or {}),
             "phase": phase,
         },
+        is_main_process=is_main_process,
     )
     trainer.train()
 
     if mode == "full_weight":
         checkpoint_dir = output_dir / "full_weight_model"
-        checkpoint_dir.mkdir(parents=True, exist_ok=True)
-        model.save_pretrained(str(checkpoint_dir))
-        tokenizer.save_pretrained(str(checkpoint_dir))
+        if is_main_process:
+            save_model = _unwrap_model(model)
+            checkpoint_dir.mkdir(parents=True, exist_ok=True)
+            save_model.save_pretrained(str(checkpoint_dir))
+            tokenizer.save_pretrained(str(checkpoint_dir))
         return checkpoint_dir, None
     else:
         adapter_dir = output_dir / "main_adapter"
-        adapter_dir.mkdir(parents=True, exist_ok=True)
-        model.save_pretrained(str(adapter_dir))
-        tokenizer.save_pretrained(str(adapter_dir))
+        if is_main_process:
+            save_model = _unwrap_model(model)
+            adapter_dir.mkdir(parents=True, exist_ok=True)
+            save_model.save_pretrained(str(adapter_dir))
+            tokenizer.save_pretrained(str(adapter_dir))
 
         merged_dir: Path | None = None
-        if save_merged_checkpoint:
+        if save_merged_checkpoint and is_main_process:
             merged_dir = _save_merged_checkpoint(model, tokenizer, output_dir)
         return adapter_dir, merged_dir
 
@@ -509,7 +627,11 @@ def _phase(rows: list[dict[str, Any]]) -> str:
     return str(rows[0].get("phase", "update-base"))
 
 
-def _collapse_train(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _collapse_train(
+    rows: list[dict[str, Any]],
+    *,
+    is_main_process: bool,
+) -> list[dict[str, Any]]:
     first = rows[0]
     runtime = _resolve_train_runtime(first)
     seed = int(first.get("subset_idx", 0) or 0)
@@ -560,15 +682,17 @@ def _collapse_train(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         save_merged_checkpoint=False,
         logging_cfg=_as_dict(first.get("logging_config")),
         phase="train-collapse-lora",
+        is_main_process=is_main_process,
     )
-    for item in adapter_tmp.iterdir():
-        target = adapter_path / item.name
-        if target.exists():
-            if target.is_file():
-                target.unlink()
-            else:
-                continue
-        item.replace(target)
+    if is_main_process and adapter_tmp.exists():
+        for item in adapter_tmp.iterdir():
+            target = adapter_path / item.name
+            if target.exists():
+                if target.is_file():
+                    target.unlink()
+                else:
+                    continue
+            item.replace(target)
 
     return [
         {
@@ -608,7 +732,11 @@ def _unload(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     ]
 
 
-def _update_base(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _update_base(
+    rows: list[dict[str, Any]],
+    *,
+    is_main_process: bool,
+) -> list[dict[str, Any]]:
     if not rows:
         raise WorkerContractError("update-base received empty training rows")
     first = rows[0]
@@ -638,6 +766,7 @@ def _update_base(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         save_merged_checkpoint=(update_mode != "full_weight"),
         logging_cfg=_as_dict(first.get("logging_config")),
         phase="update-base",
+        is_main_process=is_main_process,
     )
     effective_checkpoint = merged_dir if merged_dir is not None else adapter_dir
     checkpoint_state: dict[str, Any] = {
@@ -651,10 +780,11 @@ def _update_base(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     else:
         checkpoint_state["adapter_path"] = str(adapter_dir)
         checkpoint_state["merged_checkpoint_path"] = str(merged_dir) if merged_dir is not None else None
-    (output_dir / "worker_checkpoint_state.json").write_text(
-        json.dumps(checkpoint_state, ensure_ascii=False, sort_keys=True, indent=2) + "\n",
-        encoding="utf-8",
-    )
+    if is_main_process:
+        (output_dir / "worker_checkpoint_state.json").write_text(
+            json.dumps(checkpoint_state, ensure_ascii=False, sort_keys=True, indent=2) + "\n",
+            encoding="utf-8",
+        )
     return [
         {
             "status": "ok",
@@ -668,23 +798,29 @@ def _update_base(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_worker_args(description="Real training worker", argv=argv)
+    ddp = _init_ddp_runtime()
 
-    requests = [dict(row) for row in read_jsonl(args.input_path)]
-    phase = str(args.phase or _phase(requests))
-    schema = validate_phase_request_rows(requests, args=args, context="training")
+    try:
+        requests = [dict(row) for row in read_jsonl(args.input_path)]
+        phase = str(args.phase or _phase(requests))
+        schema = validate_phase_request_rows(requests, args=args, context="training")
 
-    if phase == "train-collapse-lora":
-        responses = _collapse_train(requests)
-    elif phase == "unload-collapse-lora":
-        responses = _unload(requests)
-    elif phase == "update-base":
-        responses = _update_base(requests)
-    else:
-        raise WorkerContractError(f"unsupported training phase: {phase}")
+        if phase == "train-collapse-lora":
+            responses = _collapse_train(requests, is_main_process=ddp.is_main_process)
+        elif phase == "unload-collapse-lora":
+            responses = _unload(requests)
+        elif phase == "update-base":
+            responses = _update_base(requests, is_main_process=ddp.is_main_process)
+        else:
+            raise WorkerContractError(f"unsupported training phase: {phase}")
 
-    validate_phase_response_rows(responses, schema=schema, context="training")
-    write_jsonl(args.output_path, responses, ensure_ascii=False)
-    return 0
+        validate_phase_response_rows(responses, schema=schema, context="training")
+        if ddp.is_main_process:
+            write_jsonl(args.output_path, responses, ensure_ascii=False)
+        _ddp_barrier(ddp)
+        return 0
+    finally:
+        _shutdown_ddp_runtime(ddp)
 
 
 if __name__ == "__main__":

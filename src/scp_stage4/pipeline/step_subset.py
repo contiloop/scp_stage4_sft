@@ -8,6 +8,7 @@ import hashlib
 import json
 import logging
 import math
+import os
 import random
 import shutil
 import subprocess
@@ -303,6 +304,13 @@ class SubsetArchiveConfig:
     format: str
     output_dir: str
     delete_original_after_archive: bool
+
+
+@dataclass(frozen=True)
+class InferenceShardConfig:
+    enabled: bool
+    gpu_ids: tuple[int, ...]
+    shard_strategy: str
 
 
 def _build_context(
@@ -659,6 +667,36 @@ def _subprocess_context_args(
     ]
 
 
+def _run_subprocess_command_jsonl(
+    *,
+    command: Sequence[str],
+    ctx: PipelineContext,
+    section: str,
+    phase: str,
+    input_path: Path,
+    output_path: Path,
+    env_overrides: Mapping[str, str] | None = None,
+) -> list[dict[str, Any]]:
+    cmd = (
+        list(command)
+        + ["--input", str(input_path), "--output", str(output_path)]
+        + _subprocess_context_args(ctx=ctx, section=section, phase=phase)
+    )
+    env = None
+    if env_overrides:
+        env = dict(os.environ)
+        for key, value in env_overrides.items():
+            env[str(key)] = str(value)
+    result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=None, text=True, env=env)
+    if result.returncode != 0:
+        stdout = (result.stdout or "").strip()
+        detail = stdout or "no output (check stderr above)"
+        raise StepSubsetError(f"{section} subprocess failed ({result.returncode}): {detail}")
+    if not output_path.exists():
+        raise StepSubsetError(f"{section} subprocess did not produce output JSONL: {output_path}")
+    return _as_rows(read_jsonl(output_path))
+
+
 def _run_subprocess_jsonl(
     *,
     ctx: PipelineContext,
@@ -674,20 +712,192 @@ def _run_subprocess_jsonl(
     output_path = runtime_dir / f"{phase}.output.jsonl"
     write_jsonl(input_path, input_rows, ensure_ascii=False)
 
-    cmd = (
-        list(command)
-        + ["--input", str(input_path), "--output", str(output_path)]
-        + _subprocess_context_args(ctx=ctx, section=section, phase=phase)
+    return _run_subprocess_command_jsonl(
+        command=command,
+        ctx=ctx,
+        section=section,
+        phase=phase,
+        input_path=input_path,
+        output_path=output_path,
     )
-    result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=None, text=True)
-    if result.returncode != 0:
-        stdout = (result.stdout or "").strip()
-        detail = stdout or "no output (check stderr above)"
-        raise StepSubsetError(f"{section} subprocess failed ({result.returncode}): {detail}")
-    if not output_path.exists():
-        raise StepSubsetError(f"{section} subprocess did not produce output JSONL: {output_path}")
 
-    return _as_rows(read_jsonl(output_path))
+
+def _resolve_inference_shard_config(ctx: PipelineContext) -> InferenceShardConfig:
+    runtime_cfg = _get_by_dotpath(ctx.cfg, "inference.runtime", {})
+    if not isinstance(runtime_cfg, Mapping):
+        runtime_cfg = {}
+    multi_gpu_cfg = runtime_cfg.get("multi_gpu", {})
+    if not isinstance(multi_gpu_cfg, Mapping):
+        multi_gpu_cfg = {}
+
+    enabled = bool(multi_gpu_cfg.get("enabled", False))
+    shard_strategy = str(multi_gpu_cfg.get("shard_strategy", "order_split")).strip() or "order_split"
+    if shard_strategy not in {"order_split", "row_id_hash"}:
+        raise StepSubsetError(
+            "inference.runtime.multi_gpu.shard_strategy must be one of: order_split, row_id_hash"
+        )
+
+    raw_gpu_ids = multi_gpu_cfg.get("gpu_ids", [])
+    if raw_gpu_ids is None:
+        raw_gpu_ids = []
+    if not isinstance(raw_gpu_ids, list):
+        raise StepSubsetError("inference.runtime.multi_gpu.gpu_ids must be a list of non-negative integers")
+
+    gpu_ids: list[int] = []
+    for idx, gpu_id in enumerate(raw_gpu_ids):
+        if isinstance(gpu_id, bool) or not isinstance(gpu_id, int) or gpu_id < 0:
+            raise StepSubsetError(
+                f"inference.runtime.multi_gpu.gpu_ids[{idx}] must be a non-negative integer"
+            )
+        if gpu_id not in gpu_ids:
+            gpu_ids.append(gpu_id)
+
+    if enabled and not gpu_ids:
+        raise StepSubsetError(
+            "inference.runtime.multi_gpu.enabled=true requires non-empty gpu_ids"
+        )
+
+    return InferenceShardConfig(
+        enabled=enabled and len(gpu_ids) >= 2,
+        gpu_ids=tuple(gpu_ids),
+        shard_strategy=shard_strategy,
+    )
+
+
+def _stable_shard_index(
+    *,
+    row: Mapping[str, Any],
+    order_idx: int,
+    shard_count: int,
+    shard_strategy: str,
+    total_rows: int,
+) -> int:
+    if shard_count <= 1:
+        return 0
+    if shard_strategy == "row_id_hash":
+        row_id_value = row.get("row_id", row.get("id", order_idx))
+        row_id = str(row_id_value)
+        digest = hashlib.sha256(row_id.encode("utf-8")).hexdigest()
+        return int(digest[:16], 16) % shard_count
+    # Deterministic contiguous split by original order.
+    return min((order_idx * shard_count) // max(total_rows, 1), shard_count - 1)
+
+
+def _run_inference_subprocess_jsonl(
+    *,
+    ctx: PipelineContext,
+    phase: str,
+    input_rows: Sequence[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    shard_cfg = _resolve_inference_shard_config(ctx)
+    if not shard_cfg.enabled or len(input_rows) <= 1:
+        return _run_subprocess_jsonl(
+            ctx=ctx,
+            section="inference",
+            phase=phase,
+            input_rows=input_rows,
+        )
+
+    runtime_dir = ctx.subset_root / "runtime_io"
+    runtime_dir.mkdir(parents=True, exist_ok=True)
+    full_input_path = runtime_dir / f"{phase}.input.jsonl"
+    full_output_path = runtime_dir / f"{phase}.output.jsonl"
+
+    ordered_requests: list[dict[str, Any]] = []
+    for order_idx, row in enumerate(input_rows):
+        enriched = dict(row)
+        enriched["order_idx"] = int(enriched.get("order_idx", order_idx))
+        ordered_requests.append(enriched)
+    write_jsonl(full_input_path, ordered_requests, ensure_ascii=False)
+
+    shard_rows: list[list[dict[str, Any]]] = [[] for _ in shard_cfg.gpu_ids]
+    total_rows = len(ordered_requests)
+    for request in ordered_requests:
+        order_idx_value = request.get("order_idx")
+        if isinstance(order_idx_value, bool) or not isinstance(order_idx_value, int):
+            raise StepSubsetError(f"{phase} request row missing integer order_idx")
+        shard_idx = _stable_shard_index(
+            row=request,
+            order_idx=order_idx_value,
+            shard_count=len(shard_cfg.gpu_ids),
+            shard_strategy=shard_cfg.shard_strategy,
+            total_rows=total_rows,
+        )
+        shard_rows[shard_idx].append(request)
+
+    command = _subprocess_command(ctx, "inference")
+    futures: list[Future[list[dict[str, Any]]]] = []
+    with ThreadPoolExecutor(max_workers=len(shard_cfg.gpu_ids)) as executor:
+        for shard_idx, gpu_id in enumerate(shard_cfg.gpu_ids):
+            shard_input = shard_rows[shard_idx]
+            if not shard_input:
+                continue
+            part_label = f"part{shard_idx:03d}.gpu{gpu_id}"
+            input_part_path = runtime_dir / f"{phase}.input.{part_label}.jsonl"
+            output_part_path = runtime_dir / f"{phase}.output.{part_label}.jsonl"
+            write_jsonl(input_part_path, shard_input, ensure_ascii=False)
+            futures.append(
+                executor.submit(
+                    _run_subprocess_command_jsonl,
+                    command=command,
+                    ctx=ctx,
+                    section="inference",
+                    phase=phase,
+                    input_path=input_part_path,
+                    output_path=output_part_path,
+                    env_overrides={"CUDA_VISIBLE_DEVICES": str(gpu_id)},
+                )
+            )
+
+    part_rows: list[dict[str, Any]] = []
+    for future in futures:
+        part_rows.extend(future.result())
+
+    if len(part_rows) != len(ordered_requests):
+        raise StepSubsetError(
+            f"{phase} merged rows mismatch after multi-gpu inference: "
+            f"expected={len(ordered_requests)} actual={len(part_rows)}"
+        )
+
+    order_idx_by_id: dict[str, int] = {}
+    for request in ordered_requests:
+        request_id = request.get("id")
+        if not isinstance(request_id, str) or not request_id:
+            raise StepSubsetError(f"{phase} request row missing id")
+        request_order_idx = request.get("order_idx")
+        if isinstance(request_order_idx, bool) or not isinstance(request_order_idx, int):
+            raise StepSubsetError(f"{phase} request row {request_id} has non-integer order_idx")
+        order_idx_by_id[request_id] = request_order_idx
+
+    merged_by_order_idx: dict[int, dict[str, Any]] = {}
+    for response in part_rows:
+        response_id = response.get("id")
+        if not isinstance(response_id, str) or not response_id:
+            raise StepSubsetError(f"{phase} response row missing id")
+        if response_id not in order_idx_by_id:
+            raise StepSubsetError(f"{phase} response id is not in request set: {response_id}")
+        response_order_idx = response.get("order_idx")
+        if isinstance(response_order_idx, bool) or not isinstance(response_order_idx, int):
+            response_order_idx = order_idx_by_id[response_id]
+        if response_order_idx in merged_by_order_idx:
+            raise StepSubsetError(
+                f"{phase} duplicate order_idx in merged multi-gpu responses: {response_order_idx}"
+            )
+        merged = dict(response)
+        merged["order_idx"] = response_order_idx
+        merged_by_order_idx[response_order_idx] = merged
+
+    merged_rows = []
+    for expected_order_idx in range(len(ordered_requests)):
+        response = merged_by_order_idx.get(expected_order_idx)
+        if response is None:
+            raise StepSubsetError(
+                f"{phase} missing merged response for order_idx={expected_order_idx}"
+            )
+        merged_rows.append(response)
+
+    write_jsonl(full_output_path, merged_rows, ensure_ascii=False)
+    return merged_rows
 
 
 def _training_runtime_mode(ctx: PipelineContext) -> str:
@@ -726,19 +936,14 @@ def _run_training_subprocess_jsonl(
     output_path = runtime_dir / f"{phase}.output.jsonl"
     write_jsonl(input_path, input_rows, ensure_ascii=False)
 
-    cmd = (
-        list(command)
-        + ["--input", str(input_path), "--output", str(output_path)]
-        + _subprocess_context_args(ctx=ctx, section="training", phase=phase)
+    return _run_subprocess_command_jsonl(
+        command=command,
+        ctx=ctx,
+        section="training",
+        phase=phase,
+        input_path=input_path,
+        output_path=output_path,
     )
-    result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=None, text=True)
-    if result.returncode != 0:
-        stdout = (result.stdout or "").strip()
-        detail = stdout or "no output (check stderr above)"
-        raise StepSubsetError(f"training subprocess failed ({result.returncode}): {detail}")
-    if not output_path.exists():
-        raise StepSubsetError(f"training subprocess did not produce output JSONL: {output_path}")
-    return _as_rows(read_jsonl(output_path))
 
 
 def _validate_status_rows(rows: Sequence[Mapping[str, Any]], *, phase: str) -> None:
@@ -1143,6 +1348,7 @@ def _generate_mt_rows(
                 "run_id": ctx.run_id,
                 "subset_idx": ctx.subset_idx,
                 "row_id": row["id"],
+                "order_idx": order_idx,
                 "q_tag": q_tag,
                 "source": row["source"],
                 "metadata": row.get("metadata", {}),
@@ -1155,11 +1361,10 @@ def _generate_mt_rows(
                     "data_length": _get_by_dotpath(ctx.cfg, "data.length", {}),
                 },
             }
-            for row in rows
+            for order_idx, row in enumerate(rows)
         ]
-        response_rows = _run_subprocess_jsonl(
+        response_rows = _run_inference_subprocess_jsonl(
             ctx=ctx,
-            section="inference",
             phase=f"infer-{q_tag}",
             input_rows=requests,
         )
@@ -2548,6 +2753,7 @@ def _generate_ood_mt_rows(
                 "run_id": ctx.run_id,
                 "subset_idx": ctx.subset_idx,
                 "row_id": row["row_id"],
+                "order_idx": order_idx,
                 "q_tag": "ood",
                 "source": row["source"],
                 "metadata": row.get("metadata", {}),
@@ -2559,11 +2765,10 @@ def _generate_ood_mt_rows(
                     "data_length": _get_by_dotpath(ctx.cfg, "data.length", {}),
                 },
             }
-            for row in rows
+            for order_idx, row in enumerate(rows)
         ]
-        response_rows = _run_subprocess_jsonl(
+        response_rows = _run_inference_subprocess_jsonl(
             ctx=ctx,
-            section="inference",
             phase="infer-ood",
             input_rows=requests,
         )

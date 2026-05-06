@@ -188,6 +188,19 @@ class ConfigValidationTests(unittest.TestCase):
         with self.assertRaises(ConfigValidationError):
             validate_config(cfg)
 
+    def test_inference_multi_gpu_runtime_contract(self) -> None:
+        cfg = compose_config("configs/scp_stage4.yaml")
+        cfg["inference"]["runtime"]["multi_gpu"]["enabled"] = True
+        cfg["inference"]["runtime"]["multi_gpu"]["gpu_ids"] = []
+        with self.assertRaises(ConfigValidationError):
+            validate_config(cfg)
+
+        cfg = compose_config("configs/scp_stage4.yaml")
+        cfg["inference"]["runtime"]["multi_gpu"]["enabled"] = True
+        cfg["inference"]["runtime"]["multi_gpu"]["gpu_ids"] = [0, 1]
+        cfg["inference"]["runtime"]["multi_gpu"]["shard_strategy"] = "row_id_hash"
+        validate_config(cfg)
+
     def test_training_collapse_response_template_is_required(self) -> None:
         cfg = compose_config("configs/scp_stage4.yaml")
         cfg["training"]["collapse_lora"]["response_template"] = ""

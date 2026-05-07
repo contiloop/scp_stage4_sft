@@ -167,7 +167,16 @@ def _load_engine(
         file=sys.stderr,
     )
 
-    llm = LLM(model=model_name, **vllm_kwargs)
+    # Text-only task: disable multimodal to avoid image processor errors
+    # on VLM architectures (e.g. Qwen3.5).
+    vllm_kwargs["limit_mm_per_prompt"] = {"image": 0, "video": 0}
+
+    try:
+        llm = LLM(model=model_name, **vllm_kwargs)
+    except Exception:
+        vllm_kwargs.pop("limit_mm_per_prompt", None)
+        vllm_kwargs["disable_mm_preprocessor_cache"] = True
+        llm = LLM(model=model_name, **vllm_kwargs)
 
     base_lora_request = None
     if base_lora is not None:

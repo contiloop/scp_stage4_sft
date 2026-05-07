@@ -62,6 +62,8 @@ set-real-env:
 	@$(REAL_ENV_PY) -m pip install -q --no-deps "vllm>=0.20.0"
 	@$(REAL_ENV_PY) -m pip install -q "transformers==5.5.0" "trl>=0.15.0" --no-deps
 	@$(REAL_ENV_PY) -m pip install -q --no-deps "xformers>=0.0.35"
+	@$(REAL_ENV_PY) -m pip install -q --no-build-isolation --no-deps "causal-conv1d>=1.6.0" \
+		|| echo "  causal-conv1d build failed (CUDA version mismatch?) — will use torch fallback"
 	@$(REAL_ENV_PY) -m pip install -q \
 		tokenizers hydra-core omegaconf \
 		openai datasets peft wandb sacrebleu

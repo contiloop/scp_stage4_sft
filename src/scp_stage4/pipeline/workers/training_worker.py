@@ -391,19 +391,53 @@ def _resolve_response_template(train_cfg: Mapping[str, Any], *, phase: str) -> s
 def _build_response_only_collator(tokenizer: Any, *, response_template: str) -> Any:
     try:
         from trl import DataCollatorForCompletionOnlyLM
-    except ImportError as exc:
-        raise WorkerContractError(
-            "trl.DataCollatorForCompletionOnlyLM is required for response-only masking"
-        ) from exc
-    try:
+
         return DataCollatorForCompletionOnlyLM(
             response_template=response_template,
             tokenizer=tokenizer,
         )
-    except Exception as exc:
+    except (ImportError, Exception):
+        pass
+
+    import torch
+    from dataclasses import dataclass
+
+    template_ids = tokenizer.encode(response_template, add_special_tokens=False)
+    if not template_ids:
         raise WorkerContractError(
-            "failed to initialize DataCollatorForCompletionOnlyLM with configured response_template"
-        ) from exc
+            f"response_template {response_template!r} tokenizes to empty sequence"
+        )
+
+    @dataclass
+    class _ResponseOnlyCollator:
+        tokenizer: Any
+        _template_ids: list[int] = None
+
+        def __post_init__(self) -> None:
+            self._template_ids = template_ids
+
+        def __call__(self, features: list[dict]) -> dict:
+            batch = self.tokenizer.pad(
+                features,
+                padding=True,
+                return_tensors="pt",
+            )
+            labels = batch["input_ids"].clone()
+            for i in range(labels.size(0)):
+                ids = batch["input_ids"][i].tolist()
+                mask_until = 0
+                tpl = self._template_ids
+                for j in range(len(ids) - len(tpl) + 1):
+                    if ids[j : j + len(tpl)] == tpl:
+                        mask_until = j + len(tpl)
+                labels[i, :mask_until] = -100
+                if "attention_mask" in batch:
+                    pad_mask = batch["attention_mask"][i] == 0
+                    labels[i][pad_mask] = -100
+            batch["labels"] = labels
+            return batch
+
+    return _ResponseOnlyCollator(tokenizer=tokenizer)
 
 
 def _instantiate_trainer(

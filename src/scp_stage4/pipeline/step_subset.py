@@ -1617,6 +1617,46 @@ def _score_mt_rows(
     raise StepSubsetError(f"Unsupported qe runtime mode: {mode}")
 
 
+def _try_recover_mt_rows_from_output(
+    ctx: PipelineContext,
+    input_rows: Sequence[Mapping[str, Any]],
+    q_tag: str,
+) -> list[dict[str, Any]] | None:
+    output_path = ctx.subset_root / "runtime_io" / f"infer-{q_tag}.output.jsonl"
+    if not output_path.exists():
+        return None
+    output_rows = _read_artifact(output_path, f"infer-{q_tag}.output")
+    if len(output_rows) != len(input_rows):
+        return None
+
+    mt_key = f"mt_{q_tag}"
+    by_id: dict[str, str] = {}
+    for resp in output_rows:
+        resp_id = resp.get("id")
+        mt = resp.get("mt")
+        status = resp.get("status", "ok")
+        if status != "ok" or not isinstance(mt, str) or not mt.strip():
+            return None
+        if isinstance(resp_id, str) and resp_id:
+            by_id[resp_id] = mt
+
+    requests = [
+        {
+            "id": f"{ctx.run_id}/subsets/subset_{ctx.subset_idx:03d}/{row['id']}/{q_tag}",
+        }
+        for row in input_rows
+    ]
+    out_rows: list[dict[str, Any]] = []
+    for req, row in zip(requests, input_rows):
+        mt = by_id.get(str(req["id"]))
+        if mt is None:
+            return None
+        out = dict(row)
+        out[mt_key] = mt
+        out_rows.append(out)
+    return out_rows
+
+
 def run_infer_q1(
     *,
     config_path: str = "configs/scp_stage4.yaml",
@@ -1640,7 +1680,12 @@ def run_infer_q1(
         use_sampled_data=use_sampled_data,
     )
 
-    q1_rows = _generate_mt_rows(ctx=ctx, rows=input_rows, q_tag="q1")
+    recovered = _try_recover_mt_rows_from_output(ctx, input_rows, "q1")
+    if recovered is not None:
+        log.info("Recovered %d infer-q1 rows from cached output, skipping inference", len(recovered))
+        q1_rows = recovered
+    else:
+        q1_rows = _generate_mt_rows(ctx=ctx, rows=input_rows, q_tag="q1")
     qe_scores = _score_mt_rows(ctx=ctx, rows=q1_rows, q_tag="q1")
     for row, score in zip(q1_rows, qe_scores):
         row["qe_q1"] = float(score["score_quality"])
@@ -2553,6 +2598,46 @@ def run_update_base(
     }
 
 
+_SUBSET_PHASE_ORDER = (
+    "infer-q1",
+    "train-collapse-lora",
+    "infer-q2",
+    "score",
+    "unload-collapse-lora",
+    "call-api",
+    "update-base",
+)
+
+
+def _validate_start_from_phase(start_from_phase: str | None) -> str | None:
+    if start_from_phase is None:
+        return None
+    if start_from_phase not in _SUBSET_PHASE_ORDER:
+        raise StepSubsetError(
+            f"Invalid start_from_phase={start_from_phase!r}; "
+            f"valid phases: {', '.join(_SUBSET_PHASE_ORDER)}"
+        )
+    return start_from_phase
+
+
+def _recover_skipped_summary(
+    ctx: PipelineContext, skipped_phases: set[str],
+) -> dict[str, Any]:
+    counts: dict[str, Any] = {}
+    if "infer-q1" in skipped_phases:
+        q1_path = ctx.subset_root / "q1.jsonl"
+        if q1_path.exists():
+            q1_rows = _read_artifact(q1_path, "q1")
+            counts["input"] = len(q1_rows)
+            counts["q1"] = len(q1_rows)
+        else:
+            raise StepSubsetError(
+                f"Cannot resume: q1.jsonl not found at {q1_path}; "
+                "infer-q1 must complete before skipping it"
+            )
+    return counts
+
+
 def run_subset(
     *,
     config_path: str = "configs/scp_stage4.yaml",
@@ -2563,52 +2648,14 @@ def run_subset(
     use_prepared_data: bool = True,
     use_sampled_data: bool = True,
     stage_completed: bool = True,
+    start_from_phase: str | None = None,
 ) -> dict[str, Any]:
-    infer_q1 = run_infer_q1(
-        config_path=config_path,
-        overrides=overrides,
-        run_id_override=run_id_override,
-        subset_idx=subset_idx,
-        subset_size_override=subset_size_override,
-        use_prepared_data=use_prepared_data,
-        use_sampled_data=use_sampled_data,
-    )
-    collapse = run_train_collapse_lora(
-        config_path=config_path,
-        overrides=overrides,
-        run_id_override=run_id_override,
-        subset_idx=subset_idx,
-    )
-    infer_q2 = run_infer_q2(
-        config_path=config_path,
-        overrides=overrides,
-        run_id_override=run_id_override,
-        subset_idx=subset_idx,
-    )
-    scored = run_score(
-        config_path=config_path,
-        overrides=overrides,
-        run_id_override=run_id_override,
-        subset_idx=subset_idx,
-    )
-    clean_base = run_unload_collapse_lora(
-        config_path=config_path,
-        overrides=overrides,
-        run_id_override=run_id_override,
-        subset_idx=subset_idx,
-    )
-    api = run_call_api(
-        config_path=config_path,
-        overrides=overrides,
-        run_id_override=run_id_override,
-        subset_idx=subset_idx,
-    )
-    train = run_update_base(
-        config_path=config_path,
-        overrides=overrides,
-        run_id_override=run_id_override,
-        subset_idx=subset_idx,
-    )
+    start_from_phase = _validate_start_from_phase(start_from_phase)
+    if start_from_phase is not None:
+        skip_until_idx = _SUBSET_PHASE_ORDER.index(start_from_phase)
+        skipped = set(_SUBSET_PHASE_ORDER[:skip_until_idx])
+    else:
+        skipped = set()
 
     ctx = _build_context(
         config_path=config_path,
@@ -2616,6 +2663,90 @@ def run_subset(
         run_id_override=run_id_override,
         subset_idx=subset_idx,
     )
+    recovered = _recover_skipped_summary(ctx, skipped) if skipped else {}
+
+    if "infer-q1" not in skipped:
+        infer_q1 = run_infer_q1(
+            config_path=config_path,
+            overrides=overrides,
+            run_id_override=run_id_override,
+            subset_idx=subset_idx,
+            subset_size_override=subset_size_override,
+            use_prepared_data=use_prepared_data,
+            use_sampled_data=use_sampled_data,
+        )
+    else:
+        infer_q1 = {
+            "run_id": ctx.run_id,
+            "subset_idx": ctx.subset_idx,
+            "run_root": str(ctx.run_root),
+            "input_rows": recovered.get("input", 0),
+            "q1_rows": recovered.get("q1", 0),
+        }
+
+    collapse = run_train_collapse_lora(
+        config_path=config_path,
+        overrides=overrides,
+        run_id_override=run_id_override,
+        subset_idx=subset_idx,
+    ) if "train-collapse-lora" not in skipped else {
+        "run_id": ctx.run_id, "subset_idx": ctx.subset_idx,
+        "run_root": str(ctx.run_root),
+        "collapse_train_rows": recovered.get("q1", 0),
+        "adapter_path": str(ctx.subset_root / "collapse_adapter"),
+    }
+
+    infer_q2 = run_infer_q2(
+        config_path=config_path,
+        overrides=overrides,
+        run_id_override=run_id_override,
+        subset_idx=subset_idx,
+    ) if "infer-q2" not in skipped else {
+        "run_id": ctx.run_id, "subset_idx": ctx.subset_idx,
+        "run_root": str(ctx.run_root), "q2_rows": 0,
+    }
+
+    scored = run_score(
+        config_path=config_path,
+        overrides=overrides,
+        run_id_override=run_id_override,
+        subset_idx=subset_idx,
+    ) if "score" not in skipped else {
+        "run_id": ctx.run_id, "subset_idx": ctx.subset_idx,
+        "run_root": str(ctx.run_root), "scored_rows": 0, "selected_rows": 0,
+    }
+
+    clean_base = run_unload_collapse_lora(
+        config_path=config_path,
+        overrides=overrides,
+        run_id_override=run_id_override,
+        subset_idx=subset_idx,
+    ) if "unload-collapse-lora" not in skipped else {
+        "run_id": ctx.run_id, "subset_idx": ctx.subset_idx,
+        "run_root": str(ctx.run_root), "clean_base": False,
+    }
+
+    api = run_call_api(
+        config_path=config_path,
+        overrides=overrides,
+        run_id_override=run_id_override,
+        subset_idx=subset_idx,
+    ) if "call-api" not in skipped else {
+        "run_id": ctx.run_id, "subset_idx": ctx.subset_idx,
+        "run_root": str(ctx.run_root),
+        "api_requests": 0, "api_rows": 0,
+        "preference_pairs": 0, "preference_pairs_run_total": 0,
+    }
+
+    train = run_update_base(
+        config_path=config_path,
+        overrides=overrides,
+        run_id_override=run_id_override,
+        subset_idx=subset_idx,
+    ) if "update-base" not in skipped else {
+        "run_id": ctx.run_id, "subset_idx": ctx.subset_idx,
+        "run_root": str(ctx.run_root), "train_rows": 0,
+    }
 
     summary = {
         "run_id": ctx.run_id,
@@ -2623,6 +2754,7 @@ def run_subset(
         "config_hash": ctx.cfg_hash,
         "run_root": str(ctx.run_root),
         "preference_pairs_run_total": api["preference_pairs_run_total"],
+        "resumed_from": start_from_phase,
         "counts": {
             "input": infer_q1["input_rows"],
             "q1": infer_q1["q1_rows"],
@@ -2637,6 +2769,9 @@ def run_subset(
             "train": train["train_rows"],
         },
     }
+    if start_from_phase is None:
+        summary.pop("resumed_from")
+
     archive = _archive_subset_if_configured(
         ctx=ctx,
         stage_completed=stage_completed,
@@ -3187,6 +3322,8 @@ def run_stage(
     overrides: list[str] | None = None,
     run_id_override: str | None = None,
     subset_size_override: int | None = None,
+    start_from_phase: str | None = None,
+    start_from_subset: int = 0,
 ) -> dict[str, Any]:
     ctx = _build_context(
         config_path=config_path,
@@ -3245,7 +3382,7 @@ def run_stage(
         if allow_prefetch and total_subsets > 0:
             prefetch_future = pool.submit(_prefetch_next_input, 0)
 
-        for subset_idx in range(total_subsets):
+        for subset_idx in range(start_from_subset, total_subsets):
             if prefetch_future is not None:
                 try:
                     prefetch_future.result()
@@ -3257,6 +3394,7 @@ def run_stage(
             if allow_prefetch and next_idx < total_subsets:
                 prefetch_future = pool.submit(_prefetch_next_input, next_idx)
 
+            phase_resume = start_from_phase if subset_idx == start_from_subset else None
             summary = run_subset(
                 config_path=config_path,
                 overrides=overrides,
@@ -3266,6 +3404,7 @@ def run_stage(
                 use_prepared_data=True,
                 use_sampled_data=use_sampled_data,
                 stage_completed=False,
+                start_from_phase=phase_resume,
             )
             should_run_eval = False
             if eval_enabled:
@@ -3343,6 +3482,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--subset-size", type=int, default=None)
     parser.add_argument("--use-prepared-data", action="store_true")
     parser.add_argument("--use-full-train-data", action="store_true")
+    parser.add_argument(
+        "--start-from-phase",
+        default=None,
+        choices=list(_SUBSET_PHASE_ORDER),
+        help="Resume run-subset from this phase, skipping earlier phases",
+    )
     args, overrides = parser.parse_known_args(argv)
     phase = args.command
     try:
@@ -3414,6 +3559,7 @@ def main(argv: list[str] | None = None) -> int:
                 subset_size_override=args.subset_size,
                 use_prepared_data=args.use_prepared_data,
                 use_sampled_data=not args.use_full_train_data,
+                start_from_phase=args.start_from_phase,
             )
         else:
             summary = run_stage(
@@ -3421,6 +3567,8 @@ def main(argv: list[str] | None = None) -> int:
                 overrides=overrides,
                 run_id_override=args.run_id,
                 subset_size_override=args.subset_size,
+                start_from_phase=args.start_from_phase,
+                start_from_subset=args.subset_idx,
             )
     except Exception as exc:
         _log_cli_failure(

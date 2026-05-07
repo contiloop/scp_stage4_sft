@@ -167,16 +167,12 @@ def _load_engine(
         file=sys.stderr,
     )
 
-    # Text-only task: disable multimodal to avoid image processor errors
-    # on VLM architectures (e.g. Qwen3.5).
-    vllm_kwargs["limit_mm_per_prompt"] = {"image": 0, "video": 0}
+    # Text-only: skip vision encoder / image processor loading on VLM
+    # architectures (e.g. Qwen3.5). The language model weights are
+    # identical — just the multimodal pipeline is not initialized.
+    vllm_kwargs["language_model_only"] = True
 
-    try:
-        llm = LLM(model=model_name, **vllm_kwargs)
-    except Exception:
-        vllm_kwargs.pop("limit_mm_per_prompt", None)
-        vllm_kwargs["disable_mm_preprocessor_cache"] = True
-        llm = LLM(model=model_name, **vllm_kwargs)
+    llm = LLM(model=model_name, **vllm_kwargs)
 
     base_lora_request = None
     if base_lora is not None:

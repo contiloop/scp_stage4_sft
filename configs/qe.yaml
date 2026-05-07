@@ -15,7 +15,7 @@
       "backend": "metricx24",
       "model_name": "google/metricx-24-hybrid-xxl-v2p6-bfloat16",
       "tokenizer_name": "google/mt5-xl",
-      "batch_size": 64,
+      "batch_size": 32,
       "max_input_length": 1536,
       "score_direction": "lower_is_better",
       "transform": {

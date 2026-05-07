@@ -2975,8 +2975,9 @@ def _score_ood_metric_rows(
             requests.append(request)
             request_ids.append(req_id)
 
-        response_rows = _run_qe_subprocess_jsonl(
+        response_rows = _run_subprocess_jsonl(
             ctx=ctx,
+            section="qe",
             phase="eval-ood",
             input_rows=requests,
         )

@@ -900,6 +900,127 @@ def _run_inference_subprocess_jsonl(
     return merged_rows
 
 
+def _resolve_qe_shard_config(ctx: PipelineContext) -> InferenceShardConfig:
+    qe_cfg = _get_by_dotpath(ctx.cfg, "qe", {})
+    if not isinstance(qe_cfg, Mapping):
+        qe_cfg = {}
+    multi_gpu_cfg = qe_cfg.get("multi_gpu", {})
+    if not isinstance(multi_gpu_cfg, Mapping):
+        multi_gpu_cfg = {}
+
+    enabled = bool(multi_gpu_cfg.get("enabled", False))
+    raw_gpu_ids = multi_gpu_cfg.get("gpu_ids", [])
+    if raw_gpu_ids is None:
+        raw_gpu_ids = []
+    if not isinstance(raw_gpu_ids, list):
+        raise StepSubsetError("qe.multi_gpu.gpu_ids must be a list of non-negative integers")
+
+    gpu_ids: list[int] = []
+    for idx, gpu_id in enumerate(raw_gpu_ids):
+        if isinstance(gpu_id, bool) or not isinstance(gpu_id, int) or gpu_id < 0:
+            raise StepSubsetError(
+                f"qe.multi_gpu.gpu_ids[{idx}] must be a non-negative integer"
+            )
+        if gpu_id not in gpu_ids:
+            gpu_ids.append(gpu_id)
+
+    if enabled and not gpu_ids:
+        raise StepSubsetError("qe.multi_gpu.enabled=true requires non-empty gpu_ids")
+
+    return InferenceShardConfig(
+        enabled=enabled and len(gpu_ids) >= 2,
+        gpu_ids=tuple(gpu_ids),
+        shard_strategy="order_split",
+    )
+
+
+def _run_qe_subprocess_jsonl(
+    *,
+    ctx: PipelineContext,
+    phase: str,
+    input_rows: Sequence[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    shard_cfg = _resolve_qe_shard_config(ctx)
+    if not shard_cfg.enabled or len(input_rows) <= 1:
+        return _run_subprocess_jsonl(
+            ctx=ctx,
+            section="qe",
+            phase=phase,
+            input_rows=input_rows,
+        )
+
+    runtime_dir = ctx.subset_root / "runtime_io"
+    runtime_dir.mkdir(parents=True, exist_ok=True)
+
+    ordered_requests: list[dict[str, Any]] = []
+    for order_idx, row in enumerate(input_rows):
+        enriched = dict(row)
+        enriched["order_idx"] = order_idx
+        ordered_requests.append(enriched)
+
+    shard_rows: list[list[dict[str, Any]]] = [[] for _ in shard_cfg.gpu_ids]
+    total_rows = len(ordered_requests)
+    for request in ordered_requests:
+        shard_idx = _stable_shard_index(
+            row=request,
+            order_idx=request["order_idx"],
+            shard_count=len(shard_cfg.gpu_ids),
+            shard_strategy=shard_cfg.shard_strategy,
+            total_rows=total_rows,
+        )
+        shard_rows[shard_idx].append(request)
+
+    command = _subprocess_command(ctx, "qe")
+    futures: list[Future[list[dict[str, Any]]]] = []
+    with ThreadPoolExecutor(max_workers=len(shard_cfg.gpu_ids)) as executor:
+        for shard_idx, gpu_id in enumerate(shard_cfg.gpu_ids):
+            shard_input = shard_rows[shard_idx]
+            if not shard_input:
+                continue
+            part_label = f"part{shard_idx:03d}.gpu{gpu_id}"
+            input_part_path = runtime_dir / f"{phase}.input.{part_label}.jsonl"
+            output_part_path = runtime_dir / f"{phase}.output.{part_label}.jsonl"
+            write_jsonl(input_part_path, shard_input, ensure_ascii=False)
+            futures.append(
+                executor.submit(
+                    _run_subprocess_command_jsonl,
+                    command=command,
+                    ctx=ctx,
+                    section="qe",
+                    phase=phase,
+                    input_path=input_part_path,
+                    output_path=output_part_path,
+                    env_overrides={"CUDA_VISIBLE_DEVICES": str(gpu_id)},
+                )
+            )
+
+    part_rows: list[dict[str, Any]] = []
+    for future in futures:
+        part_rows.extend(future.result())
+
+    if len(part_rows) != len(ordered_requests):
+        raise StepSubsetError(
+            f"{phase} merged rows mismatch after multi-gpu QE: "
+            f"expected={len(ordered_requests)} actual={len(part_rows)}"
+        )
+
+    by_id: dict[str, dict[str, Any]] = {}
+    for response in part_rows:
+        resp_id = response.get("id")
+        if isinstance(resp_id, str) and resp_id:
+            by_id[resp_id] = response
+
+    merged_rows: list[dict[str, Any]] = []
+    for request in ordered_requests:
+        req_id = request.get("id")
+        resp = by_id.get(str(req_id))
+        if resp is None:
+            raise StepSubsetError(f"{phase} missing QE response for id={req_id}")
+        merged_rows.append(resp)
+
+    return merged_rows
+
+
 def _training_runtime_mode(ctx: PipelineContext) -> str:
     return str(_get_by_dotpath(ctx.cfg, "training.runtime.mode", "mock"))
 
@@ -1460,9 +1581,8 @@ def _score_mt_rows(
             requests.append(request)
             request_ids.append(request_id)
 
-        response_rows = _run_subprocess_jsonl(
+        response_rows = _run_qe_subprocess_jsonl(
             ctx=ctx,
-            section="qe",
             phase=f"qe-{q_tag}",
             input_rows=requests,
         )
@@ -2855,9 +2975,8 @@ def _score_ood_metric_rows(
             requests.append(request)
             request_ids.append(req_id)
 
-        response_rows = _run_subprocess_jsonl(
+        response_rows = _run_qe_subprocess_jsonl(
             ctx=ctx,
-            section="qe",
             phase="eval-ood",
             input_rows=requests,
         )

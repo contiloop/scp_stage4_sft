@@ -558,7 +558,7 @@ def _instantiate_trainer(
     fp16, bf16 = _trainer_device_flags()
     common_train_args: dict[str, Any] = {
         "output_dir": str(output_dir),
-        "per_device_train_batch_size": _as_positive_int(
+        "per_device_train_batch_size": _env_int("TRAIN_BATCH_SIZE", 0) or _as_positive_int(
             _as_dict(train_cfg.get("batching")).get("per_device_train_batch_size", train_cfg.get("per_device_train_batch_size")),
             1,
         ),

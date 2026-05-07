@@ -231,7 +231,50 @@ def _build_dataset(rows: list[dict[str, Any]], tokenizer: Any, *, response_templ
     return Dataset.from_list(payload)
 
 
+def _use_unsloth() -> bool:
+    return os.environ.get("DISABLE_UNSLOTH", "").strip() not in ("1", "true", "yes")
+
+
+def _load_hf_model(runtime: _TrainRuntime) -> tuple[Any, Any]:
+    try:
+        from transformers import AutoModelForCausalLM, AutoTokenizer
+        import torch
+    except ModuleNotFoundError as exc:
+        raise WorkerContractError("transformers/torch required for HF training") from exc
+
+    kwargs: dict[str, Any] = {
+        "pretrained_model_name_or_path": runtime.model_ref,
+        "trust_remote_code": runtime.trust_remote_code,
+    }
+    if runtime.dtype is not None:
+        kwargs["torch_dtype"] = runtime.dtype
+    else:
+        kwargs["torch_dtype"] = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
+
+    if runtime.load_in_4bit:
+        try:
+            from transformers import BitsAndBytesConfig
+            kwargs["quantization_config"] = BitsAndBytesConfig(
+                load_in_4bit=True,
+                bnb_4bit_compute_dtype=kwargs.get("torch_dtype", torch.bfloat16),
+            )
+        except ImportError:
+            pass
+
+    model = AutoModelForCausalLM.from_pretrained(**kwargs)
+    tokenizer = AutoTokenizer.from_pretrained(
+        runtime.model_ref,
+        trust_remote_code=runtime.trust_remote_code,
+    )
+    if tokenizer.pad_token is None and tokenizer.eos_token is not None:
+        tokenizer.pad_token = tokenizer.eos_token
+    return model, tokenizer
+
+
 def _load_unsloth_model(runtime: _TrainRuntime) -> tuple[Any, Any]:
+    if not _use_unsloth():
+        return _load_hf_model(runtime)
+
     try:
         from unsloth import FastLanguageModel
     except ModuleNotFoundError as exc:
@@ -247,11 +290,15 @@ def _load_unsloth_model(runtime: _TrainRuntime) -> tuple[Any, Any]:
     if runtime.trust_remote_code:
         kwargs["trust_remote_code"] = True
 
+    attn_impl = os.environ.get("ATTN_IMPLEMENTATION", "eager").strip()
+    if attn_impl:
+        kwargs["attn_implementation"] = attn_impl
+
     try:
         model, tokenizer = FastLanguageModel.from_pretrained(**kwargs)
     except TypeError:
-        # Older Unsloth versions may not accept trust_remote_code.
         kwargs.pop("trust_remote_code", None)
+        kwargs.pop("attn_implementation", None)
         model, tokenizer = FastLanguageModel.from_pretrained(**kwargs)
 
     if tokenizer.pad_token is None and tokenizer.eos_token is not None:
@@ -263,6 +310,40 @@ def _model_has_peft(model: Any) -> bool:
     return hasattr(model, "peft_config")
 
 
+def _ensure_lora_model_hf(
+    *,
+    model: Any,
+    lora_cfg: Mapping[str, Any],
+) -> Any:
+    try:
+        from peft import LoraConfig, get_peft_model
+    except ModuleNotFoundError as exc:
+        raise WorkerContractError("peft package is required for HF LoRA setup") from exc
+
+    rank = _as_positive_int(lora_cfg.get("rank"), 8)
+    alpha = _as_positive_int(lora_cfg.get("alpha"), rank * 2)
+    dropout = float(lora_cfg.get("dropout", 0.0) or 0.0)
+    bias = str(lora_cfg.get("bias", "none"))
+    target_modules_raw = lora_cfg.get("target_modules")
+    if isinstance(target_modules_raw, list) and target_modules_raw:
+        target_modules = [str(m) for m in target_modules_raw if str(m).strip()]
+    else:
+        target_modules = list(_DEFAULT_LORA_TARGETS)
+
+    config = LoraConfig(
+        r=rank,
+        lora_alpha=alpha,
+        lora_dropout=dropout,
+        bias=bias,
+        target_modules=target_modules,
+        task_type="CAUSAL_LM",
+    )
+    model.enable_input_require_grads()
+    model = get_peft_model(model, config)
+    model.print_trainable_parameters()
+    return model
+
+
 def _ensure_lora_model(
     *,
     model: Any,
@@ -272,6 +353,9 @@ def _ensure_lora_model(
 ) -> Any:
     if _model_has_peft(model):
         return model
+
+    if not _use_unsloth():
+        return _ensure_lora_model_hf(model=model, lora_cfg=lora_cfg)
 
     try:
         from unsloth import FastLanguageModel
@@ -285,7 +369,6 @@ def _ensure_lora_model(
     target_modules_raw = lora_cfg.get("target_modules")
     target_modules: list[str] | str
     if isinstance(target_modules_raw, str) and target_modules_raw.strip():
-        # Unsloth supports convenience strings such as "all-linear".
         target_modules = target_modules_raw.strip()
     elif isinstance(target_modules_raw, list) and target_modules_raw:
         parsed = [str(module) for module in target_modules_raw if str(module).strip()]
@@ -308,7 +391,6 @@ def _ensure_lora_model(
         "use_rslora": use_rslora,
         "loftq_config": loftq_config,
     }
-    # Keep compatibility across Unsloth versions by only passing supported kwargs.
     supported = inspect.signature(FastLanguageModel.get_peft_model).parameters
     filtered_kwargs = {key: value for key, value in peft_kwargs.items() if key in supported}
     return FastLanguageModel.get_peft_model(model, **filtered_kwargs)
@@ -682,11 +764,12 @@ def _collapse_train(
         "bias": collapse_cfg.get("bias", "none"),
         "target_modules": collapse_cfg.get("target_modules", list(_DEFAULT_LORA_TARGETS)),
     }
+    batching_cfg = _as_dict(collapse_cfg.get("batching"))
     train_cfg = {
         "num_train_epochs": collapse_cfg.get("num_train_epochs", 1),
         "learning_rate": collapse_cfg.get("learning_rate", 5e-3),
-        "per_device_train_batch_size": 1,
-        "gradient_accumulation_steps": 1,
+        "per_device_train_batch_size": _as_positive_int(batching_cfg.get("per_device_train_batch_size"), 1),
+        "gradient_accumulation_steps": _as_positive_int(batching_cfg.get("gradient_accumulation_steps"), 1),
         "optimizer": {
             "learning_rate": collapse_cfg.get("learning_rate", 5e-3),
             "weight_decay": 0.0,
@@ -696,9 +779,9 @@ def _collapse_train(
             "max_grad_norm": 1.0,
         },
         "batching": {
-            "per_device_train_batch_size": 1,
-            "gradient_accumulation_steps": 1,
-            "packing": False,
+            "per_device_train_batch_size": _as_positive_int(batching_cfg.get("per_device_train_batch_size"), 1),
+            "gradient_accumulation_steps": _as_positive_int(batching_cfg.get("gradient_accumulation_steps"), 1),
+            "packing": bool(batching_cfg.get("packing", False)),
             "response_template": response_template,
         },
         "response_template": response_template,

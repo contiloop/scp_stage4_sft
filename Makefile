@@ -62,7 +62,8 @@ set-real-env:
 	@$(REAL_ENV_PY) -m pip install -q "transformers==5.5.4" "trl>=0.15.0" --no-deps
 	@$(REAL_ENV_PY) -m pip install -q \
 		tokenizers hydra-core omegaconf xformers \
-		openai datasets peft wandb sacrebleu
+		openai datasets peft wandb sacrebleu \
+		"vllm>=0.20.0"
 	@if $(REAL_ENV_PY) -m pip install -q weave; then \
 		echo "  weave_install_ok=true"; \
 	else \

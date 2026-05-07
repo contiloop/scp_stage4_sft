@@ -59,11 +59,11 @@ set-real-env:
 	fi
 	@$(REAL_ENV_PY) -m pip install -q --upgrade pip
 	@$(REAL_ENV_PY) -m pip install -q --upgrade --no-deps unsloth unsloth-zoo
+	@$(REAL_ENV_PY) -m pip install -q "vllm>=0.20.0"
 	@$(REAL_ENV_PY) -m pip install -q "transformers==5.5.0" "trl>=0.15.0" --no-deps
 	@$(REAL_ENV_PY) -m pip install -q \
 		tokenizers hydra-core omegaconf xformers \
-		openai datasets peft wandb sacrebleu \
-		"vllm>=0.20.0"
+		openai datasets peft wandb sacrebleu
 	@if $(REAL_ENV_PY) -m pip install -q weave; then \
 		echo "  weave_install_ok=true"; \
 	else \

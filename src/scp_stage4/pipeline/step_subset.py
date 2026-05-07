@@ -1625,7 +1625,7 @@ def _try_recover_mt_rows_from_output(
     output_path = ctx.subset_root / "runtime_io" / f"infer-{q_tag}.output.jsonl"
     if not output_path.exists():
         return None
-    output_rows = _read_artifact(output_path, f"infer-{q_tag}.output")
+    output_rows = _as_rows(read_jsonl(output_path))
     if len(output_rows) != len(input_rows):
         return None
 

@@ -1682,7 +1682,7 @@ def run_infer_q1(
 
     recovered = _try_recover_mt_rows_from_output(ctx, input_rows, "q1")
     if recovered is not None:
-        log.info("Recovered %d infer-q1 rows from cached output, skipping inference", len(recovered))
+        _prefetch_log.info("Recovered %d infer-q1 rows from cached output, skipping inference", len(recovered))
         q1_rows = recovered
     else:
         q1_rows = _generate_mt_rows(ctx=ctx, rows=input_rows, q_tag="q1")

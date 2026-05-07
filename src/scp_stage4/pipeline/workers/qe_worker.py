@@ -87,7 +87,8 @@ for r in payload:
         text += f" reference: {ref}"
     formatted.append(text)
 scores = []
-for start in range(0, len(formatted), batch_size):
+total_batches = (len(formatted) + batch_size - 1) // batch_size
+for batch_idx, start in enumerate(range(0, len(formatted), batch_size)):
     chunk = formatted[start:start + batch_size]
     enc = tokenizer(
         chunk,
@@ -107,6 +108,8 @@ for start in range(0, len(formatted), batch_size):
         )
         batch_scores = out.logits[:, 0, 250089].float().clamp(0.0, 25.0).tolist()
         scores.extend(float(x) for x in batch_scores)
+    if (batch_idx + 1) % 50 == 0 or (batch_idx + 1) == total_batches:
+        print(f"[metricx-driver] {batch_idx+1}/{total_batches} batches ({len(scores)}/{len(formatted)} rows)", file=sys.stderr)
 
 print(json.dumps({"model_name": model_name, "scores": scores}))
 """
@@ -151,7 +154,8 @@ def _metricx24_scores(
         result = subprocess.run(
             [metricx_python, driver_path],
             input=args,
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=None,
             text=True,
             env=env,
         )

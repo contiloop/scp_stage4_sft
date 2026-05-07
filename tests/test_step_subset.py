@@ -142,13 +142,13 @@ def test_run_eval_ood_writes_metricx_bleu_chrf_artifacts() -> None:
         assert rows, "ood eval rows should not be empty"
         first = rows[0]
         assert "mt" in first
-        assert "metricx24_ref_quality" in first
+        assert "xcomet" in first
         assert "bleu" in first
         assert "chrf" in first
         assert summary["rows"] == len(rows)
 
         eval_summary = json.loads(summary_path.read_text(encoding="utf-8"))
-        assert "metricx24_ref_quality_mean" in eval_summary
+        assert "xcomet_mean" in eval_summary
         assert "bleu_mean" in eval_summary
         assert "chrf_mean" in eval_summary
     finally:
@@ -684,7 +684,7 @@ def test_checkpoint_retention_keeps_one_best_plus_last_plus_current(
                 "phase": "eval-ood",
                 "status": "ok",
                 "metric_group": "ood_eval",
-                "metrics": {"ood/metricx24_ref_quality_mean": quality},
+                "metrics": {"ood/xcomet_mean": quality},
             }
             with (run_root / "metrics.jsonl").open("a", encoding="utf-8") as handle:
                 handle.write(json.dumps(record, ensure_ascii=False, sort_keys=True))

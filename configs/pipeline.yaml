@@ -32,7 +32,7 @@
       "runtime": "qe_subprocess",
       "source_column": "Source_En",
       "reference_column": "Target_Ko",
-      "metrics": ["metricx24_ref", "BLEU", "chrF"]
+      "metrics": ["xcomet", "BLEU", "chrF"]
     }
   }
 }

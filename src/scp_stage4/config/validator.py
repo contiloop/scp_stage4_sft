@@ -537,25 +537,26 @@ def validate_config(cfg: dict[str, Any]) -> None:
     if not isinstance(eval_metrics, list) or not eval_metrics:
         _err(errors, "pipeline.eval_after_subset.metrics must be a non-empty list")
     else:
-        allowed_eval_metrics = {"metricx24_ref", "BLEU", "chrF"}
+        allowed_eval_metrics = {"metricx24_ref", "BLEU", "chrF", "comet_kiwi", "xcomet"}
+        canonical_map = {
+            "metricx24_ref": "metricx24_ref",
+            "bleu": "BLEU",
+            "chrf": "chrF",
+            "comet_kiwi": "comet_kiwi",
+            "cometkiwi": "comet_kiwi",
+            "xcomet": "xcomet",
+        }
         for idx, metric in enumerate(eval_metrics):
             if not isinstance(metric, str) or not metric.strip():
                 _err(errors, f"pipeline.eval_after_subset.metrics[{idx}] must be a non-empty string")
                 continue
             normalized = metric.strip().lower()
-            canonical = (
-                "metricx24_ref"
-                if normalized == "metricx24_ref"
-                else "BLEU"
-                if normalized == "bleu"
-                else "chrF"
-                if normalized == "chrf"
-                else None
-            )
+            canonical = canonical_map.get(normalized)
             if canonical is None or canonical not in allowed_eval_metrics:
                 _err(
                     errors,
-                    "pipeline.eval_after_subset.metrics must contain only: metricx24_ref, BLEU, chrF",
+                    "pipeline.eval_after_subset.metrics must contain only: "
+                    "metricx24_ref, BLEU, chrF, comet_kiwi, xcomet",
                 )
                 break
     eval_metric_settings = eval_after.get("metric_settings")

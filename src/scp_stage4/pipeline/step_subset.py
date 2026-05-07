@@ -2833,9 +2833,13 @@ def _canonical_eval_metric(metric: str) -> str:
         return "BLEU"
     if lowered == "chrf":
         return "chrF"
+    if lowered in {"comet_kiwi", "cometkiwi"}:
+        return "comet_kiwi"
+    if lowered in {"xcomet"}:
+        return "xcomet"
     raise StepSubsetError(
         f"Unsupported pipeline.eval_after_subset metric={metric!r}; "
-        "allowed: metricx24_ref, BLEU, chrF"
+        "allowed: metricx24_ref, BLEU, chrF, comet_kiwi, xcomet"
     )
 
 
@@ -3078,6 +3082,10 @@ def _score_ood_metric_rows(
                 scores.append(_mock_bleu_score(mt, reference))
             elif metric_name == "chrF":
                 scores.append(_mock_chrf_score(mt, reference))
+            elif metric_name == "comet_kiwi":
+                scores.append(round(0.5 + _stable_unit_interval(f"{row['id']}::{source}::{mt}") * 0.5, 6))
+            elif metric_name == "xcomet":
+                scores.append(round(0.5 + _stable_unit_interval(f"{row['id']}::{source}::{mt}::{reference}") * 0.5, 6))
             else:
                 raise StepSubsetError(f"Unsupported eval metric in mock mode: {metric_name}")
         return scores
@@ -3189,6 +3197,8 @@ def run_eval_ood(
     metricx_quality: list[float] = []
     bleu_scores: list[float] = []
     chrf_scores: list[float] = []
+    comet_kiwi_scores: list[float] = []
+    xcomet_scores: list[float] = []
 
     for metric_name in metric_names:
         scores = _score_ood_metric_rows(
@@ -3219,6 +3229,14 @@ def run_eval_ood(
             for row, value in zip(generated_rows, scores):
                 row["chrf"] = float(value)
                 chrf_scores.append(float(value))
+        elif metric_name == "comet_kiwi":
+            for row, value in zip(generated_rows, scores):
+                row["comet_kiwi"] = float(value)
+                comet_kiwi_scores.append(float(value))
+        elif metric_name == "xcomet":
+            for row, value in zip(generated_rows, scores):
+                row["xcomet"] = float(value)
+                xcomet_scores.append(float(value))
 
     eval_root = ctx.run_root / "eval" / dataset_name
     eval_root.mkdir(parents=True, exist_ok=True)
@@ -3272,6 +3290,10 @@ def run_eval_ood(
         summary["bleu_mean"] = _mean(bleu_scores)
     if chrf_scores:
         summary["chrf_mean"] = _mean(chrf_scores)
+    if comet_kiwi_scores:
+        summary["comet_kiwi_mean"] = _mean(comet_kiwi_scores)
+    if xcomet_scores:
+        summary["xcomet_mean"] = _mean(xcomet_scores)
 
     _write_json_file(summary_path, summary)
     history_rows.append(summary)
@@ -3290,6 +3312,10 @@ def run_eval_ood(
         log_metrics["ood/bleu_mean"] = float(_mean(bleu_scores))
     if chrf_scores:
         log_metrics["ood/chrf_mean"] = float(_mean(chrf_scores))
+    if comet_kiwi_scores:
+        log_metrics["ood/comet_kiwi_mean"] = float(_mean(comet_kiwi_scores))
+    if xcomet_scores:
+        log_metrics["ood/xcomet_mean"] = float(_mean(xcomet_scores))
 
     ctx.logger.log_event(
         context=_context_for_phase(ctx, "eval-ood"),

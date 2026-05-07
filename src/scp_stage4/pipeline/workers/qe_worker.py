@@ -354,18 +354,34 @@ def _comet_scores(
     *,
     model_name: str,
     batch_size: int,
+    include_reference: bool = False,
 ) -> list[float]:
     comet_python = _resolve_isolation_python("COMET_PYTHON")
+
+    def _build_data() -> list[dict[str, str]]:
+        data: list[dict[str, str]] = []
+        for row in rows:
+            item: dict[str, str] = {"src": str(row.get("src", "")), "mt": str(row.get("mt", ""))}
+            if include_reference:
+                ref = str(row.get("ref", "")).strip()
+                if not ref:
+                    raise WorkerContractError(
+                        "COMET reference mode requires non-empty ref field for every row"
+                    )
+                item["ref"] = ref
+            data.append(item)
+        return data
+
     if comet_python == sys.executable:
         try:
             from comet import download_model, load_from_checkpoint
         except ModuleNotFoundError as exc:
             raise WorkerContractError(
-                "comet package is required for qe.primary.backend=comet_kiwi; "
+                "comet package is required; "
                 "set COMET_PYTHON to a venv with unbabel-comet installed"
             ) from exc
 
-        data = [{"src": str(row.get("src", "")), "mt": str(row.get("mt", ""))} for row in rows]
+        data = _build_data()
         model_path = download_model(model_name)
         model = load_from_checkpoint(model_path)
         try:
@@ -388,7 +404,7 @@ def _comet_scores(
         tmp = Path(tmpdir)
         input_path = tmp / "input.json"
         output_path = tmp / "output.json"
-        data = [{"src": str(row.get("src", "")), "mt": str(row.get("mt", ""))} for row in rows]
+        data = _build_data()
         input_path.write_text(json.dumps(data), encoding="utf-8")
 
         script = (
@@ -405,10 +421,10 @@ def _comet_scores(
             f"open({str(output_path)!r}, 'w').write(json.dumps(scores))\n"
         )
         result = subprocess.run(
-            [comet_python, "-c", script], capture_output=True, text=True
+            [comet_python, "-c", script], stdout=subprocess.PIPE, stderr=None, text=True
         )
         if result.returncode != 0:
-            detail = (result.stderr or "").strip() or (result.stdout or "").strip() or "no output"
+            detail = (result.stdout or "").strip() or "no output (check stderr above)"
             raise WorkerContractError(f"COMET subprocess failed: {detail}")
         if not output_path.exists():
             raise WorkerContractError("COMET subprocess did not produce output")
@@ -483,6 +499,14 @@ def _score_rows(rows: list[dict[str, Any]]) -> tuple[list[float], str]:
             raise WorkerContractError("qe.primary.model_name is required for comet_kiwi backend")
         return (_comet_scores(rows, model_name=model_name, batch_size=batch_size), model_name)
 
+    if backend == "xcomet":
+        if not model_name:
+            raise WorkerContractError("qe.primary.model_name is required for xcomet backend")
+        return (
+            _comet_scores(rows, model_name=model_name, batch_size=batch_size, include_reference=True),
+            model_name,
+        )
+
     if backend == "heuristic":
         return (
             [_heuristic_score(str(row.get("src", "")), str(row.get("mt", ""))) for row in rows],
@@ -491,7 +515,7 @@ def _score_rows(rows: list[dict[str, Any]]) -> tuple[list[float], str]:
 
     raise WorkerContractError(
         "unsupported QE backend="
-        f"{backend_raw!r}. Supported: metricx24, metricx24_ref, BLEU, chrF, comet_kiwi, heuristic"
+        f"{backend_raw!r}. Supported: metricx24, metricx24_ref, BLEU, chrF, comet_kiwi, xcomet, heuristic"
     )
 
 

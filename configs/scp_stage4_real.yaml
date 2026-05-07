@@ -11,7 +11,7 @@
     "logging",
     "prompts",
     "run",
-    "inference_real_runtime",
+    "inference_vllm_runtime",
     "qe_real_runtime",
     "external_api_real_runtime",
     "training_real_runtime",

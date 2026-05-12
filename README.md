@@ -139,6 +139,35 @@ Check source mix ratio anytime:
 make data-source-ratio
 ```
 
+### 5C. Team smoke profile (`smoke32`)
+
+Use this tiny prepared bundle to validate end-to-end wiring quickly:
+
+```sh
+DATASET_REPO="alwaysgood/scp-stage4-dataset-trainable"
+BUNDLE_TAG="prepared-2026-05-11-smoke32"
+DATASET_PATH="prepared/${BUNDLE_TAG}"
+
+make download-prepared-data \
+  HF_DATASET_REPO="${DATASET_REPO}" \
+  HF_DATASET_PATH="${DATASET_PATH}" \
+  HF_DATASET_REVISION="main"
+```
+
+Run one subset from prepared artifacts:
+
+```sh
+make run-subset-real-from-prepared RUN_ID=smoke32_subset_001 \
+  OVERRIDES="data.subset_size=32 pipeline.subset.shuffle=false"
+```
+
+For local re-generation of the smoke bundle profile, use the same overrides:
+
+```sh
+make USE_VENV=1 CONFIG=configs/scp_stage4_real.yaml prepare-data \
+  OVERRIDES="data.runtime.hf.max_rows_per_dataset=64 data.subset_size=32 pipeline.subset.shuffle=false data.length.tokenizer_fallback=whitespace"
+```
+
 ### 6. Train (standard path with local preprocess)
 
 Run one subset:

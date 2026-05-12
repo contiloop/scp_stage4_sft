@@ -33,7 +33,8 @@ Runtime version notes (recommended):
 - Torch stack: `torch==2.10.0`, `torchvision==0.25.0`, `torchaudio==2.10.0`
 - vLLM: `vllm==0.19.1`
 - Unsloth stack: `unsloth==2026.5.2`, `unsloth-zoo==2026.5.1`
-- HF training stack: `transformers==4.56.2`, `trl==0.24.0`, `datasets==3.4.1`
+- HF training stack: `transformers==5.5.0`, `trl==0.24.0`, `datasets==3.4.1`, `huggingface_hub>=1.14`
+  - `transformers==5.5.0` is required because vLLM 0.19.1 imports `transformers.tokenization_utils_tokenizers.TokenizersBackend` (only present in transformers 5.x). `make set-real-env` force-installs it last with `--no-deps` so upstream pins from `trl`/`unsloth`/`vllm` do not roll it back.
 
 Quick verification after setup:
 

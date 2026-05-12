@@ -28,12 +28,14 @@ TORCH_INDEX_URL ?= https://download.pytorch.org/whl/cu128
 PIN_TORCH_VERSION ?= 2.10.0
 PIN_TORCHVISION_VERSION ?= 0.25.0
 PIN_TORCHAUDIO_VERSION ?= 2.10.0
-PIN_TRANSFORMERS_VERSION ?= 4.56.2
+PIN_TRANSFORMERS_VERSION ?= 5.5.0
 PIN_TRL_VERSION ?= 0.24.0
 PIN_DATASETS_VERSION ?= 3.4.1
 PIN_UNSLOTH_VERSION ?= 2026.5.2
 PIN_UNSLOTH_ZOO_VERSION ?= 2026.5.1
 PIN_VLLM_VERSION ?= 0.19.1
+PIN_HF_HUB_VERSION ?= 1.14.0
+PIN_HF_XET_VERSION ?= 1.4.3
 PIN_SETUPTOOLS_SPEC ?= "setuptools>=77.0.3,<81.0.0"
 
 .PHONY: set set-real-env validate-config validate-jsonl validate-local test-local smoke-local \
@@ -77,7 +79,6 @@ set-real-env:
 		"torchvision==$(PIN_TORCHVISION_VERSION)" \
 		"torchaudio==$(PIN_TORCHAUDIO_VERSION)"
 	@$(REAL_ENV_PY) -m pip install \
-		"transformers==$(PIN_TRANSFORMERS_VERSION)" \
 		"trl==$(PIN_TRL_VERSION)" \
 		"datasets==$(PIN_DATASETS_VERSION)"
 	@$(REAL_ENV_PY) -m pip install \
@@ -92,6 +93,13 @@ set-real-env:
 		tokenizers hydra-core omegaconf \
 		openai peft wandb sacrebleu \
 		sentencepiece bitsandbytes hf_transfer msgspec tyro torchao
+	# vLLM 0.19.1 requires transformers.tokenization_utils_tokenizers.TokenizersBackend,
+	# which exists in transformers 5.x. Force-install transformers/hf_hub at the end with
+	# --no-deps so upstream pins from trl/unsloth/vllm don't roll us back to 4.x.
+	@$(REAL_ENV_PY) -m pip install --no-deps \
+		"transformers==$(PIN_TRANSFORMERS_VERSION)" \
+		"huggingface_hub>=$(PIN_HF_HUB_VERSION),<2" \
+		"hf-xet>=$(PIN_HF_XET_VERSION),<2"
 	@if $(REAL_ENV_PY) -m pip install weave; then \
 		echo "  weave_install_ok=true"; \
 	else \

@@ -276,7 +276,7 @@ def _load_unsloth_model(runtime: _TrainRuntime) -> tuple[Any, Any]:
         return _load_hf_model(runtime)
 
     try:
-        from unsloth import FastLanguageModel
+        from unsloth import FastLanguageModel, FastVisionModel
     except ModuleNotFoundError as exc:
         raise WorkerContractError("unsloth package is required for training runtime") from exc
 
@@ -290,16 +290,32 @@ def _load_unsloth_model(runtime: _TrainRuntime) -> tuple[Any, Any]:
     if runtime.trust_remote_code:
         kwargs["trust_remote_code"] = True
 
-    attn_impl = os.environ.get("ATTN_IMPLEMENTATION", "eager").strip()
+    attn_impl = os.environ.get("ATTN_IMPLEMENTATION", "sdpa").strip()
     if attn_impl:
         kwargs["attn_implementation"] = attn_impl
 
-    try:
-        model, tokenizer = FastLanguageModel.from_pretrained(**kwargs)
-    except TypeError:
-        kwargs.pop("trust_remote_code", None)
-        kwargs.pop("attn_implementation", None)
-        model, tokenizer = FastLanguageModel.from_pretrained(**kwargs)
+    model = tokenizer = None
+    load_errors: list[str] = []
+    for candidate_cls in (FastVisionModel, FastLanguageModel):
+        attempt_kwargs = dict(kwargs)
+        try:
+            model, tokenizer = candidate_cls.from_pretrained(**attempt_kwargs)
+            break
+        except TypeError:
+            attempt_kwargs.pop("trust_remote_code", None)
+            attempt_kwargs.pop("attn_implementation", None)
+            try:
+                model, tokenizer = candidate_cls.from_pretrained(**attempt_kwargs)
+                break
+            except Exception as exc:
+                load_errors.append(f"{candidate_cls.__name__}: {type(exc).__name__}: {exc}")
+        except Exception as exc:
+            load_errors.append(f"{candidate_cls.__name__}: {type(exc).__name__}: {exc}")
+    if model is None or tokenizer is None:
+        raise WorkerContractError(
+            "Failed to load model via Unsloth (Vision then Language).\n"
+            + "\n".join(load_errors)
+        )
 
     if tokenizer.pad_token is None and tokenizer.eos_token is not None:
         tokenizer.pad_token = tokenizer.eos_token

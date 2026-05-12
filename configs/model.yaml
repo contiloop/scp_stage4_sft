@@ -5,7 +5,7 @@
     "max_length": 8192,
     "max_seq_length": null,
     "dtype": "bf16",
-    "attention_impl": "xformers",
+    "attention_impl": "sdpa",
     "padding_side": "left",
     "eos_token": null,
     "chat_template": null,

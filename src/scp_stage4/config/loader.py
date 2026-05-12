@@ -69,7 +69,35 @@ def _parse_override_value(raw: str) -> Any:
     try:
         return json.loads(raw)
     except json.JSONDecodeError:
-        return raw
+        pass
+
+    # Makefile passes overrides through a shell expansion step, which can strip
+    # quotes inside list/dict literals (e.g. ["a","b"] -> [a,b]). For container-like
+    # values, accept YAML-style parsing as a compatibility fallback.
+    text = raw.strip()
+    if text.startswith("[") or text.startswith("{"):
+        try:
+            import yaml  # type: ignore
+        except ModuleNotFoundError:
+            yaml = None  # type: ignore[assignment]
+        if yaml is not None:
+            try:
+                parsed = yaml.safe_load(text)
+            except Exception:
+                parsed = None
+            if isinstance(parsed, (list, dict)):
+                return parsed
+
+    # Last-resort compatibility for shell-expanded list literals such as
+    # [python3,-m,scp_stage4.pipeline.workers.inference_worker].
+    if text.startswith("[") and text.endswith("]"):
+        inner = text[1:-1].strip()
+        if not inner:
+            return []
+        parts = [part.strip() for part in inner.split(",")]
+        if all(parts):
+            return parts
+    return raw
 
 
 def _set_by_dotpath(target: dict[str, Any], key: str, value: Any) -> None:

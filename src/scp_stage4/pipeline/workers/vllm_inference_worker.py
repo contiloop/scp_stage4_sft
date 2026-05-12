@@ -7,6 +7,7 @@ to ["python3", "-m", "scp_stage4.pipeline.workers.vllm_inference_worker"].
 
 from __future__ import annotations
 
+import inspect
 import sys
 from pathlib import Path
 from typing import Any, Mapping
@@ -135,6 +136,38 @@ def _build_sampling_params(request: Mapping[str, Any]) -> Any:
     )
 
 
+def _patch_layer_type_validation_compat() -> None:
+    """Patch HF layer_type_validation signature mismatch for some vLLM paths.
+
+    Some vLLM config adapters call:
+      layer_type_validation(layer_types, num_hidden_layers)
+    while newer transformers may expose a 1-arg callable.
+    This shim accepts both invocation shapes and delegates safely.
+    """
+    try:
+        from transformers import configuration_utils as cfg_utils  # type: ignore
+    except Exception:
+        return
+
+    fn = getattr(cfg_utils, "layer_type_validation", None)
+    if fn is None or getattr(fn, "_scp_stage4_compat", False):
+        return
+
+    try:
+        params = inspect.signature(fn).parameters
+        if len(params) != 1:
+            return
+    except Exception:
+        return
+
+    def _compat(layer_types: Any, num_hidden_layers: Any = None) -> Any:
+        # num_hidden_layers is intentionally ignored for 1-arg transformers APIs.
+        return fn(layer_types)
+
+    setattr(_compat, "_scp_stage4_compat", True)
+    cfg_utils.layer_type_validation = _compat
+
+
 def _load_engine(
     requests: list[Mapping[str, Any]],
 ) -> tuple[Any, Any | None, Any | None]:
@@ -142,6 +175,8 @@ def _load_engine(
 
     Returns (llm, base_lora_request, collapse_lora_request).
     """
+    _patch_layer_type_validation_compat()
+
     from vllm import LLM
     from vllm.lora.request import LoRARequest
 

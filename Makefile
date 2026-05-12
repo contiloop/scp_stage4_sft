@@ -43,7 +43,7 @@ set:
 		$(PYTHON) -m venv $(VENV_DIR); \
 	fi
 	@if ! $(SETUP_PY) -c 'import importlib.util, sys; sys.exit(0 if importlib.util.find_spec("pytest") else 1)'; then \
-		$(SETUP_PY) -m pip install -q --upgrade pip pytest; \
+		$(SETUP_PY) -m pip install --upgrade pip pytest; \
 	fi
 	@$(SETUP_PY) -c 'import sys; print("set:", sys.executable, sys.version.split()[0])'
 
@@ -57,34 +57,34 @@ set-real-env:
 	@if [ "$(USE_VENV)" = "1" ] && [ ! -x "$(VENV_PYTHON)" ]; then \
 		$(PYTHON) -m venv $(VENV_DIR); \
 	fi
-	@$(REAL_ENV_PY) -m pip install -q --upgrade pip
-	@$(REAL_ENV_PY) -m pip install -q --upgrade --no-deps unsloth unsloth-zoo
-	@$(REAL_ENV_PY) -m pip install -q --no-deps "vllm>=0.20.0"
-	@$(REAL_ENV_PY) -m pip install -q "transformers==5.5.0" "trl>=0.15.0" --no-deps
-	@$(REAL_ENV_PY) -m pip install -q --no-deps "xformers>=0.0.35"
-	@$(REAL_ENV_PY) -m pip install -q --no-build-isolation --no-deps "causal-conv1d>=1.6.0" \
+	@$(REAL_ENV_PY) -m pip install --upgrade pip
+	@$(REAL_ENV_PY) -m pip install --upgrade --no-deps unsloth unsloth-zoo
+	@$(REAL_ENV_PY) -m pip install --no-deps "vllm>=0.20.0"
+	@$(REAL_ENV_PY) -m pip install "transformers==5.5.0" "trl>=0.15.0" --no-deps
+	@$(REAL_ENV_PY) -m pip install --no-deps "xformers>=0.0.35"
+	@$(REAL_ENV_PY) -m pip install --no-build-isolation --no-deps "causal-conv1d>=1.6.0" \
 		|| echo "  causal-conv1d build failed (CUDA version mismatch?) — will use torch fallback"
-	@$(REAL_ENV_PY) -m pip install -q \
+	@$(REAL_ENV_PY) -m pip install \
 		tokenizers hydra-core omegaconf \
 		openai datasets peft wandb sacrebleu
-	@if $(REAL_ENV_PY) -m pip install -q weave; then \
+	@if $(REAL_ENV_PY) -m pip install weave; then \
 		echo "  weave_install_ok=true"; \
 	else \
 		echo "  weave_install_ok=false"; \
 	fi
 	@$(REAL_ENV_PY) -c "from fla.ops.gated_delta_rule import chunk_gated_delta_rule" 2>/dev/null \
-		|| $(REAL_ENV_PY) -m pip install -q flash-linear-attention
+		|| $(REAL_ENV_PY) -m pip install flash-linear-attention
 	@$(REAL_ENV_PY) -c 'import sys, torch; print("set-real-env:", sys.executable, "torch", torch.__version__)'
 	@echo "set-real-env: setting up QE isolation venv at $(QE_VENV_DIR)..."
 	@if [ ! -x "$(QE_VENV_DIR)/bin/python" ]; then \
 		$(PYTHON) -m venv --without-pip $(QE_VENV_DIR) && \
 		curl -sS https://bootstrap.pypa.io/get-pip.py | $(QE_VENV_DIR)/bin/python; \
 	fi
-	@$(QE_VENV_DIR)/bin/python -m pip install -q --upgrade pip setuptools wheel
-	@$(QE_VENV_DIR)/bin/pip install -q \
+	@$(QE_VENV_DIR)/bin/python -m pip install --upgrade pip setuptools wheel
+	@$(QE_VENV_DIR)/bin/pip install \
 		torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
-	@$(QE_VENV_DIR)/bin/pip install -q --no-deps transformers
-	@$(QE_VENV_DIR)/bin/pip install -q \
+	@$(QE_VENV_DIR)/bin/pip install --no-deps transformers
+	@$(QE_VENV_DIR)/bin/pip install \
 		sentencepiece safetensors accelerate huggingface_hub \
 		"unbabel-comet>=2.2.7" sacrebleu
 	@$(QE_VENV_DIR)/bin/python -c 'import torch; print("set-real-env: QE venv torch", torch.__version__, "cuda", torch.cuda.is_available())'

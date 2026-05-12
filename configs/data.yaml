@@ -18,29 +18,29 @@
     },
     "datasets": [
       {
-        "name": "alwaysgood/reuter_processed",
+        "name": "alwaysgood/reuter-semantic-deduped",
         "split": "train",
-        "data_files": {"train": "data/reuter_processed.jsonl"}
+        "data_files": {"train": "deduped_shards/deduped_*.parquet"}
       },
       {
-        "name": "alwaysgood/c4_noblocklist_processed",
+        "name": "alwaysgood/c4-semantic-deduped",
         "split": "train",
-        "data_files": {"train": "data/c4_noblocklist_processed_part-*.jsonl.gz"}
+        "data_files": {"train": "deduped_shards/deduped_*.parquet"}
       },
       {
-        "name": "alwaysgood/Bloomberg_Financial_News_processed",
+        "name": "alwaysgood/bloomberg-semantic-deduped",
         "split": "train",
-        "data_files": {"train": "data/Bloomberg_Financial_News_processed_part-*.jsonl.gz"}
+        "data_files": {"train": "deduped_shards/deduped_*.parquet"}
       },
       {
-        "name": "alwaysgood/earnings_call_mono",
+        "name": "alwaysgood/earnings-semantic-deduped",
         "split": "train",
-        "data_files": {"train": "train.jsonl"}
+        "data_files": {"train": "deduped_shards/deduped_*.parquet"}
       },
       {
-        "name": "alwaysgood/sec-10k-pre-processed",
+        "name": "alwaysgood/sec-10k-semantic-deduped",
         "split": "train",
-        "data_files": {"train": "translation_dataset_shards/translation_dataset-*.parquet"}
+        "data_files": {"train": "deduped_shards/deduped_*.parquet"}
       }
     ],
     "text_columns": ["source_text", "text"],

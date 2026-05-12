@@ -24,6 +24,17 @@ HF_DATASET_PRIVATE ?= 0
 HF_CREATE_REPO ?= 1
 HF_COMMIT_MESSAGE ?=
 SKIP_CAUSAL_CONV1D ?= 0
+TORCH_INDEX_URL ?= https://download.pytorch.org/whl/cu128
+PIN_TORCH_VERSION ?= 2.10.0
+PIN_TORCHVISION_VERSION ?= 0.25.0
+PIN_TORCHAUDIO_VERSION ?= 2.10.0
+PIN_TRANSFORMERS_VERSION ?= 4.56.2
+PIN_TRL_VERSION ?= 0.24.0
+PIN_DATASETS_VERSION ?= 3.4.1
+PIN_UNSLOTH_VERSION ?= 2026.5.2
+PIN_UNSLOTH_ZOO_VERSION ?= 2026.5.1
+PIN_VLLM_VERSION ?= 0.19.1
+PIN_SETUPTOOLS_SPEC ?= "setuptools>=77.0.3,<81.0.0"
 
 .PHONY: set set-real-env validate-config validate-jsonl validate-local test-local smoke-local \
 	validate-remote-env smoke-remote-qe smoke-remote-model smoke-remote-api dry-run-remote-subset \
@@ -59,13 +70,27 @@ set-real-env:
 		$(PYTHON) -m venv $(VENV_DIR); \
 	fi
 	@$(REAL_ENV_PY) -m pip install --upgrade pip
-	@$(REAL_ENV_PY) -m pip install --upgrade --no-deps unsloth unsloth-zoo
-	@$(REAL_ENV_PY) -m pip install --no-deps "vllm>=0.20.0"
-	@$(REAL_ENV_PY) -m pip install "transformers==5.5.0" "trl>=0.15.0" --no-deps
-	@$(REAL_ENV_PY) -m pip install --no-deps "xformers>=0.0.35"
+	@$(REAL_ENV_PY) -m pip install $(PIN_SETUPTOOLS_SPEC)
+	@$(REAL_ENV_PY) -m pip install \
+		--index-url $(TORCH_INDEX_URL) \
+		"torch==$(PIN_TORCH_VERSION)" \
+		"torchvision==$(PIN_TORCHVISION_VERSION)" \
+		"torchaudio==$(PIN_TORCHAUDIO_VERSION)"
+	@$(REAL_ENV_PY) -m pip install \
+		"transformers==$(PIN_TRANSFORMERS_VERSION)" \
+		"trl==$(PIN_TRL_VERSION)" \
+		"datasets==$(PIN_DATASETS_VERSION)"
+	@$(REAL_ENV_PY) -m pip install \
+		"unsloth-zoo==$(PIN_UNSLOTH_ZOO_VERSION)" \
+		"unsloth==$(PIN_UNSLOTH_VERSION)"
+	@$(REAL_ENV_PY) -m pip install \
+		"vllm==$(PIN_VLLM_VERSION)" \
+		--extra-index-url $(TORCH_INDEX_URL)
+	@$(REAL_ENV_PY) -m pip install --index-url $(TORCH_INDEX_URL) "xformers==0.0.34"
 	@$(REAL_ENV_PY) -m pip install \
 		tokenizers hydra-core omegaconf \
-		openai datasets peft wandb sacrebleu
+		openai peft wandb sacrebleu \
+		sentencepiece bitsandbytes hf_transfer msgspec tyro torchao
 	@if $(REAL_ENV_PY) -m pip install weave; then \
 		echo "  weave_install_ok=true"; \
 	else \

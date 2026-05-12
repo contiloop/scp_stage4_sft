@@ -135,12 +135,19 @@ def _init_ddp_runtime() -> _DDPRuntime:
         backend = "gloo"
 
     if not dist.is_initialized():
-        dist.init_process_group(
-            backend=backend,
-            init_method="env://",
-            rank=ddp.rank,
-            world_size=ddp.world_size,
-        )
+        import datetime
+        init_kwargs: dict[str, Any] = {
+            "backend": backend,
+            "init_method": "env://",
+            "rank": ddp.rank,
+            "world_size": ddp.world_size,
+            "timeout": datetime.timedelta(minutes=10),
+        }
+        if backend == "nccl" and torch.cuda.is_available():
+            # Pin device explicitly so NCCL does not guess from global rank;
+            # heterogeneous rank->GPU maps would otherwise hang collectives.
+            init_kwargs["device_id"] = torch.device(f"cuda:{ddp.local_rank}")
+        dist.init_process_group(**init_kwargs)
     return ddp
 
 

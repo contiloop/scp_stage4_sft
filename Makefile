@@ -23,13 +23,14 @@ HF_DATASET_TAG_EXIST_OK ?= 0
 HF_DATASET_PRIVATE ?= 0
 HF_CREATE_REPO ?= 1
 HF_COMMIT_MESSAGE ?=
+SKIP_CAUSAL_CONV1D ?= 0
 
 .PHONY: set set-real-env validate-config validate-jsonl validate-local test-local smoke-local \
 	validate-remote-env smoke-remote-qe smoke-remote-model smoke-remote-api dry-run-remote-subset \
 	validate-real-config run-subset-real run-stage-real run-subset-real-from-prepared run-stage-real-from-prepared \
 	prepare-data run-subset run-stage eval eval-ood data-source-ratio \
 	infer-q1 train-collapse-lora infer-q2 score unload-collapse-lora call-api update-base \
-	pack-prepared-data upload-prepared-data download-prepared-data
+	pack-prepared-data upload-prepared-data download-prepared-data verify-cuda-kernels
 
 # Target: set
 # required config keys: none
@@ -62,8 +63,6 @@ set-real-env:
 	@$(REAL_ENV_PY) -m pip install --no-deps "vllm>=0.20.0"
 	@$(REAL_ENV_PY) -m pip install "transformers==5.5.0" "trl>=0.15.0" --no-deps
 	@$(REAL_ENV_PY) -m pip install --no-deps "xformers>=0.0.35"
-	@$(REAL_ENV_PY) -m pip install --no-build-isolation --no-deps "causal-conv1d>=1.6.0" \
-		|| echo "  causal-conv1d build failed (CUDA version mismatch?) — will use torch fallback"
 	@$(REAL_ENV_PY) -m pip install \
 		tokenizers hydra-core omegaconf \
 		openai datasets peft wandb sacrebleu
@@ -72,8 +71,14 @@ set-real-env:
 	else \
 		echo "  weave_install_ok=false"; \
 	fi
+	@if [ "$(SKIP_CAUSAL_CONV1D)" = "1" ]; then \
+		echo "  skip causal_conv1d setup (SKIP_CAUSAL_CONV1D=1)"; \
+	else \
+		PYTHON=$(REAL_ENV_PY) bash scripts/ensure_causal_conv1d.sh; \
+	fi
 	@$(REAL_ENV_PY) -c "from fla.ops.gated_delta_rule import chunk_gated_delta_rule" 2>/dev/null \
 		|| $(REAL_ENV_PY) -m pip install flash-linear-attention
+	@$(MAKE) verify-cuda-kernels REAL_ENV_PY=$(REAL_ENV_PY) SKIP_CAUSAL_CONV1D=$(SKIP_CAUSAL_CONV1D)
 	@$(REAL_ENV_PY) -c 'import sys, torch; print("set-real-env:", sys.executable, "torch", torch.__version__)'
 	@echo "set-real-env: setting up QE isolation venv at $(QE_VENV_DIR)..."
 	@if [ ! -x "$(QE_VENV_DIR)/bin/python" ]; then \
@@ -90,6 +95,19 @@ set-real-env:
 	@$(QE_VENV_DIR)/bin/python -c 'import torch; print("set-real-env: QE venv torch", torch.__version__, "cuda", torch.cuda.is_available())'
 	@echo "set-real-env: export COMET_PYTHON=$(QE_VENV_DIR)/bin/python"
 	@echo "set-real-env: export METRICX_PYTHON=$(QE_VENV_DIR)/bin/python"
+
+# Target: verify-cuda-kernels
+# required config keys: none
+# input artifacts: installed runtime python packages in REAL_ENV_PY
+# output artifacts: stdout kernel readiness status
+# runtime: local/remote GPU runtime check
+# exit behavior: 0 if kernel checks pass (or skip flag enabled); non-zero on kernel check failure
+verify-cuda-kernels:
+	@if [ "$(SKIP_CAUSAL_CONV1D)" = "1" ]; then \
+		echo "  skip CUDA kernel verification (SKIP_CAUSAL_CONV1D=1)"; \
+	else \
+		PYTHON=$(REAL_ENV_PY) bash scripts/verify_cuda_kernels.sh; \
+	fi
 
 # Target: validate-config
 # required config keys: model.*, data.length.*, inference.q1/q2, pipeline.subset, training.backend, external_api.*, logging.local.*

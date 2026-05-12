@@ -38,6 +38,11 @@ PIN_HF_HUB_VERSION ?= 1.14.0
 PIN_HF_XET_VERSION ?= 1.4.3
 PIN_SETUPTOOLS_SPEC ?= "setuptools>=77.0.3,<81.0.0"
 
+# FlashAttention2 wheel hosted in a HF dataset. Built once for torch 2.10/cu128/py310/sm_80
+# (A100). Override FLASH_ATTN_REPO/FILE to use a different host or rebuild for new arches.
+FLASH_ATTN_REPO ?= alwaysgood/scp-stage4-wheels
+FLASH_ATTN_WHL ?= flash_attn-2.8.3-cp310-cp310-linux_x86_64.whl
+
 .PHONY: set set-real-env validate-config validate-jsonl validate-local test-local smoke-local \
 	validate-remote-env smoke-remote-qe smoke-remote-model smoke-remote-api dry-run-remote-subset \
 	validate-real-config run-subset-real run-stage-real run-subset-real-from-prepared run-stage-real-from-prepared \
@@ -100,6 +105,10 @@ set-real-env:
 		"transformers==$(PIN_TRANSFORMERS_VERSION)" \
 		"huggingface_hub>=$(PIN_HF_HUB_VERSION),<2" \
 		"hf-xet>=$(PIN_HF_XET_VERSION),<2"
+	# FlashAttention2: no torch 2.10 prebuilt on Dao-AILab; install our self-built wheel
+	# hosted on HF datasets (sm_80, A100). Override FLASH_ATTN_* to swap wheel.
+	@$(REAL_ENV_PY) -m pip install \
+		"https://huggingface.co/datasets/$(FLASH_ATTN_REPO)/resolve/main/$(FLASH_ATTN_WHL)"
 	@if $(REAL_ENV_PY) -m pip install weave; then \
 		echo "  weave_install_ok=true"; \
 	else \

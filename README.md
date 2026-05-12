@@ -35,6 +35,7 @@ Runtime version notes (recommended):
 - Unsloth stack: `unsloth==2026.5.2`, `unsloth-zoo==2026.5.1`
 - HF training stack: `transformers==5.5.0`, `trl==0.24.0`, `datasets==3.4.1`, `huggingface_hub>=1.14`
   - `transformers==5.5.0` is required because vLLM 0.19.1 imports `transformers.tokenization_utils_tokenizers.TokenizersBackend` (only present in transformers 5.x). `make set-real-env` force-installs it last with `--no-deps` so upstream pins from `trl`/`unsloth`/`vllm` do not roll it back.
+- FlashAttention2: prebuilt wheel hosted at [`alwaysgood/scp-stage4-wheels`](https://huggingface.co/datasets/alwaysgood/scp-stage4-wheels) (built for torch 2.10 / cu128 / py310 / sm_80 because Dao-AILab releases stop at torch 2.8). Required so Unsloth routes Qwen3.5 attention through FA2 instead of eager (which OOMs at seq=8192). To target other GPU archs, rebuild with `TORCH_CUDA_ARCH_LIST="8.0;9.0"` and override `FLASH_ATTN_REPO`/`FLASH_ATTN_WHL` in `make set-real-env`.
 
 Quick verification after setup:
 

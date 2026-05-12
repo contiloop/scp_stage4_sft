@@ -83,6 +83,7 @@ set-real-env:
 	@$(REAL_ENV_PY) -m pip install \
 		"unsloth-zoo==$(PIN_UNSLOTH_ZOO_VERSION)" \
 		"unsloth==$(PIN_UNSLOTH_VERSION)"
+	@$(REAL_ENV_PY) -m pip uninstall -y vllm || true
 	@$(REAL_ENV_PY) -m pip install \
 		"vllm==$(PIN_VLLM_VERSION)" \
 		--extra-index-url $(TORCH_INDEX_URL)

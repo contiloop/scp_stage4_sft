@@ -27,6 +27,21 @@ make set-real-env
 `make set-real-env` installs the real runtime stack (Unsloth / TRL / QE / API deps).
 By default, it installs into the instance Python (`USE_VENV=0`). To install into `.venv`, use `make USE_VENV=1 set-real-env`.
 
+Runtime version notes (recommended):
+
+- CUDA wheel index: `https://download.pytorch.org/whl/cu128`
+- Torch stack: `torch==2.10.0`, `torchvision==0.25.0`, `torchaudio==2.10.0`
+- vLLM: `vllm==0.19.1`
+- Unsloth stack: `unsloth==2026.5.2`, `unsloth-zoo==2026.5.1`
+- HF training stack: `transformers==4.56.2`, `trl==0.24.0`, `datasets==3.4.1`
+
+Quick verification after setup:
+
+```sh
+python -c "import torch, torchvision, torchaudio, transformers, trl, datasets, vllm; print('torch', torch.__version__, 'cuda', torch.version.cuda); print('torchvision', torchvision.__version__); print('torchaudio', torchaudio.__version__); print('transformers', transformers.__version__); print('trl', trl.__version__); print('datasets', datasets.__version__); print('vllm', vllm.__version__)"
+pip check
+```
+
 ### 3. Configure access (HF / W&B / LLM API)
 
 ```sh

@@ -14,6 +14,7 @@ import hashlib
 import inspect
 import json
 import os
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
@@ -40,6 +41,7 @@ _DEFAULT_LORA_TARGETS = [
     "up_proj",
     "down_proj",
 ]
+_NOOP_COLLAPSE_MARKER = "NOOP_COLLAPSE.json"
 
 
 @dataclass(frozen=True)
@@ -227,6 +229,7 @@ def _build_dataset(
     tokenizer: Any,
     *,
     prompts_cfg: Mapping[str, Any] | None,
+    max_seq_length: int,
 ) -> Any:
     try:
         from datasets import Dataset
@@ -235,11 +238,13 @@ def _build_dataset(
 
     eos = getattr(tokenizer, "eos_token", None) or ""
     payload = []
+    row_ids: list[str] = []
     for row in rows:
         source = str(row.get("source", "")).strip()
         target = str(row.get("target", "")).strip()
         if not source or not target:
             continue
+        row_id = str(row.get("id", "")).strip() or f"row_{len(payload):06d}"
         payload.append(
             {
                 "text": _format_sft_text(
@@ -250,9 +255,128 @@ def _build_dataset(
                 + (eos if eos else ""),
             }
         )
+        row_ids.append(row_id)
     if not payload:
         raise WorkerContractError("no valid source/target rows for training")
+    keep_indices, over_limit = _filter_training_text_indices_by_length(
+        tokenizer=tokenizer,
+        texts=[str(item["text"]) for item in payload],
+        row_ids=row_ids,
+        max_seq_length=max_seq_length,
+    )
+    if over_limit:
+        sample = ", ".join(f"{row_id}:{length}" for row_id, length in over_limit[:5])
+        print(
+            "[training-worker] filtered over-limit samples before SFT; "
+            f"max_seq_length={max_seq_length}, "
+            f"filtered_rows={len(over_limit)}/{len(payload)}, "
+            f"examples=[{sample}]",
+            file=sys.stderr,
+            flush=True,
+        )
+    payload = [payload[idx] for idx in keep_indices]
+    if not payload:
+        raise WorkerContractError(
+            "all training samples exceed model context window after filtering; "
+            f"max_seq_length={max_seq_length}, filtered_rows={len(over_limit)}"
+        )
     return Dataset.from_list(payload)
+
+
+def _tokenized_text_lengths(tokenizer: Any, texts: list[str]) -> list[int]:
+    try:
+        tokenized = tokenizer(
+            texts,
+            add_special_tokens=True,
+            return_length=True,
+            truncation=False,
+        )
+    except Exception as exc:
+        raise WorkerContractError(f"failed to tokenize training texts for length audit: {exc}") from exc
+
+    lengths = tokenized.get("length") if isinstance(tokenized, Mapping) else None
+    if isinstance(lengths, list) and len(lengths) == len(texts):
+        out: list[int] = []
+        for idx, value in enumerate(lengths):
+            try:
+                parsed = int(value)
+            except Exception as exc:
+                raise WorkerContractError(
+                    f"tokenizer length value is not numeric at index={idx}: {value!r}"
+                ) from exc
+            out.append(parsed)
+        return out
+
+    out = []
+    for idx, text in enumerate(texts):
+        try:
+            encoded = tokenizer.encode(text, add_special_tokens=True)
+        except Exception as exc:
+            raise WorkerContractError(
+                f"failed to encode training text for length audit at index={idx}: {exc}"
+            ) from exc
+        out.append(len(encoded))
+    return out
+
+
+def _filter_training_text_indices_by_length(
+    *,
+    tokenizer: Any,
+    texts: list[str],
+    row_ids: list[str],
+    max_seq_length: int,
+) -> tuple[list[int], list[tuple[str, int]]]:
+    if max_seq_length <= 0:
+        raise WorkerContractError(f"max_seq_length must be positive, got={max_seq_length}")
+    if len(texts) != len(row_ids):
+        raise WorkerContractError(
+            f"length audit mismatch: texts={len(texts)} row_ids={len(row_ids)}"
+        )
+    if not texts:
+        return [], []
+
+    keep_indices: list[int] = []
+    over_limit: list[tuple[str, int]] = []
+    batch_size = 1024
+    for start in range(0, len(texts), batch_size):
+        chunk = texts[start : start + batch_size]
+        lengths = _tokenized_text_lengths(tokenizer, chunk)
+        if len(lengths) != len(chunk):
+            raise WorkerContractError(
+                f"tokenizer length audit returned mismatched count: expected={len(chunk)} got={len(lengths)}"
+            )
+        for offset, length in enumerate(lengths):
+            idx = start + offset
+            if length > max_seq_length:
+                over_limit.append((row_ids[idx], int(length)))
+                continue
+            keep_indices.append(idx)
+    return keep_indices, over_limit
+
+
+def _is_context_overflow_skip_error(exc: WorkerContractError) -> bool:
+    message = str(exc)
+    return (
+        "all training samples exceed model context window after filtering" in message
+        or "no valid source/target rows for training" in message
+    )
+
+
+def _write_noop_collapse_marker(adapter_path: Path, *, reason: str) -> None:
+    marker_path = adapter_path / _NOOP_COLLAPSE_MARKER
+    payload = {
+        "status": "ok",
+        "no_op": True,
+        "reason": reason,
+    }
+    marker_path.write_text(
+        json.dumps(payload, ensure_ascii=False, sort_keys=True, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+
+def _is_noop_collapse_adapter_path(path: Path) -> bool:
+    return path.exists() and (path / _NOOP_COLLAPSE_MARKER).exists()
 
 
 def _use_unsloth() -> bool:
@@ -751,7 +875,12 @@ def _run_sft_train(
         model = _prepare_full_weight_model(model)
     else:
         model = _ensure_lora_model(model=model, runtime=runtime, lora_cfg=lora_cfg, seed=seed)
-    dataset = _build_dataset(rows, tokenizer, prompts_cfg=prompts_cfg)
+    dataset = _build_dataset(
+        rows,
+        tokenizer,
+        prompts_cfg=prompts_cfg,
+        max_seq_length=runtime.max_seq_length,
+    )
     trainer = _instantiate_trainer(
         model=model,
         tokenizer=tokenizer,
@@ -848,19 +977,37 @@ def _collapse_train(
 
     # Save collapse adapter as output_dir/main_adapter first, then move files up.
     scratch_dir = adapter_path / "_train_tmp"
-    adapter_tmp, _ = _run_sft_train(
-        rows=rows,
-        output_dir=scratch_dir,
-        runtime=runtime,
-        lora_cfg=lora_cfg,
-        train_cfg=train_cfg,
-        seed=seed,
-        save_merged_checkpoint=False,
-        logging_cfg=_as_dict(first.get("logging_config")),
-        phase="train-collapse-lora",
-        is_main_process=is_main_process,
-        prompts_cfg=prompts_cfg,
-    )
+    try:
+        adapter_tmp, _ = _run_sft_train(
+            rows=rows,
+            output_dir=scratch_dir,
+            runtime=runtime,
+            lora_cfg=lora_cfg,
+            train_cfg=train_cfg,
+            seed=seed,
+            save_merged_checkpoint=False,
+            logging_cfg=_as_dict(first.get("logging_config")),
+            phase="train-collapse-lora",
+            is_main_process=is_main_process,
+            prompts_cfg=prompts_cfg,
+        )
+    except WorkerContractError as exc:
+        if not _is_context_overflow_skip_error(exc):
+            raise
+        reason = str(exc)
+        if is_main_process:
+            _write_noop_collapse_marker(adapter_path, reason=reason)
+        return [
+            {
+                "status": "ok",
+                "adapter_path": str(adapter_path),
+                "trained_rows": 0,
+                "backend": "unsloth",
+                "error": None,
+                "no_op": True,
+                "reason": reason,
+            }
+        ]
     if is_main_process and adapter_tmp.exists():
         for item in adapter_tmp.iterdir():
             target = adapter_path / item.name
@@ -889,7 +1036,7 @@ def _unload(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     path = Path(adapter_path)
     if not path.exists():
         raise WorkerContractError(f"collapse adapter path not found: {adapter_path}")
-    if not (path / "adapter_config.json").exists():
+    if not (path / "adapter_config.json").exists() and not _is_noop_collapse_adapter_path(path):
         raise WorkerContractError(
             f"collapse adapter path missing adapter_config.json: {adapter_path}"
         )
@@ -933,20 +1080,41 @@ def _update_base(
         "bias": base_lora_cfg.get("bias", "none"),
         "target_modules": base_lora_cfg.get("target_modules", list(_DEFAULT_LORA_TARGETS)),
     }
-    adapter_dir, merged_dir = _run_sft_train(
-        rows=rows,
-        output_dir=output_dir,
-        runtime=runtime,
-        lora_cfg=lora_cfg,
-        train_cfg=training_cfg,
-        seed=seed,
-        mode=update_mode,
-        save_merged_checkpoint=(update_mode != "full_weight"),
-        logging_cfg=_as_dict(first.get("logging_config")),
-        phase="update-base",
-        is_main_process=is_main_process,
-        prompts_cfg=prompts_cfg,
-    )
+    try:
+        adapter_dir, merged_dir = _run_sft_train(
+            rows=rows,
+            output_dir=output_dir,
+            runtime=runtime,
+            lora_cfg=lora_cfg,
+            train_cfg=training_cfg,
+            seed=seed,
+            mode=update_mode,
+            save_merged_checkpoint=(update_mode != "full_weight"),
+            logging_cfg=_as_dict(first.get("logging_config")),
+            phase="update-base",
+            is_main_process=is_main_process,
+            prompts_cfg=prompts_cfg,
+        )
+    except WorkerContractError as exc:
+        if not _is_context_overflow_skip_error(exc):
+            raise
+        reason = str(exc)
+        fallback_checkpoint = first.get("base_checkpoint")
+        if isinstance(fallback_checkpoint, str) and fallback_checkpoint.strip():
+            checkpoint_path = fallback_checkpoint.strip()
+        else:
+            checkpoint_path = str(output_dir)
+        return [
+            {
+                "status": "ok",
+                "checkpoint_path": checkpoint_path,
+                "trained_rows": 0,
+                "backend": "unsloth",
+                "error": None,
+                "no_op": True,
+                "reason": reason,
+            }
+        ]
     effective_checkpoint = merged_dir if merged_dir is not None else adapter_dir
     checkpoint_state: dict[str, Any] = {
         "status": "ok",

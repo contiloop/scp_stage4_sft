@@ -1776,12 +1776,17 @@ def run_train_collapse_lora(
         raise StepSubsetError(f"Unsupported training runtime mode: {mode}")
 
     adapter_path.mkdir(parents=True, exist_ok=True)
+    status_trained_rows = len(q1_rows)
+    if status_rows:
+        maybe_trained = status_rows[0].get("trained_rows")
+        if isinstance(maybe_trained, int) and not isinstance(maybe_trained, bool) and maybe_trained >= 0:
+            status_trained_rows = maybe_trained
     state = {
         "status": "ok",
         "adapter_path": str(adapter_path),
         "run_id": ctx.run_id,
         "subset_idx": ctx.subset_idx,
-        "trained_rows": len(q1_rows),
+        "trained_rows": status_trained_rows,
         "runtime_mode": mode,
         "status_rows": status_rows,
     }
@@ -1795,7 +1800,7 @@ def run_train_collapse_lora(
     )
     ctx.logger.log_metrics(
         context=_context_for_phase(ctx, "train-collapse-lora"),
-        metrics={"subset/collapse_train_rows": len(q1_rows)},
+        metrics={"subset/collapse_train_rows": status_trained_rows},
         metric_group="subset",
     )
     _touch_failure_layout(ctx)
@@ -1803,7 +1808,7 @@ def run_train_collapse_lora(
         "run_id": ctx.run_id,
         "subset_idx": ctx.subset_idx,
         "run_root": str(ctx.run_root),
-        "collapse_train_rows": len(q1_rows),
+        "collapse_train_rows": status_trained_rows,
         "adapter_path": str(adapter_path),
     }
 
@@ -2528,38 +2533,54 @@ def run_update_base(
             }
         ]
     elif mode == "subprocess":
-        status_rows = _run_training_subprocess_jsonl(
-            ctx=ctx,
-            command_key="update_command",
-            phase="update-base",
-            input_rows=[
+        if not train_rows:
+            latest_ref = _latest_checkpoint_ref(ctx)
+            if isinstance(latest_ref, str) and latest_ref.strip():
+                checkpoint_path = Path(latest_ref)
+            status_rows = [
                 {
-                    "id": row["id"],
-                    "run_id": ctx.run_id,
-                    "subset_idx": ctx.subset_idx,
-                    "phase": "update-base",
-                    "source": row["source"],
-                    "target": row["gold"],
-                    "metadata": row.get("metadata", {}),
-                    "train_artifact": str(train_path),
-                    "output_dir": str(train_final_dir),
-                    "training_config": _get_by_dotpath(ctx.cfg, "training.base_update", {}),
-                    "model": _get_by_dotpath(ctx.cfg, "model", {}),
-                    "base_checkpoint": _latest_checkpoint_ref(ctx),
-                    "logging_config": _get_by_dotpath(ctx.cfg, "logging", {}),
-                    "runtime_config": {
-                        "prompts": _get_by_dotpath(ctx.cfg, "prompts", {}),
-                    },
+                    "status": "ok",
+                    "checkpoint_path": str(checkpoint_path),
+                    "trained_rows": 0,
+                    "backend": "noop",
+                    "error": None,
+                    "no_op": True,
+                    "reason": "no status=ok API rows available for update-base training",
                 }
-                for row in train_rows
-            ],
-        )
-        _validate_status_rows(status_rows, phase="update-base")
-        for row in status_rows:
-            maybe_checkpoint = row.get("checkpoint_path")
-            if isinstance(maybe_checkpoint, str) and maybe_checkpoint.strip():
-                checkpoint_path = Path(maybe_checkpoint)
-                break
+            ]
+        else:
+            status_rows = _run_training_subprocess_jsonl(
+                ctx=ctx,
+                command_key="update_command",
+                phase="update-base",
+                input_rows=[
+                    {
+                        "id": row["id"],
+                        "run_id": ctx.run_id,
+                        "subset_idx": ctx.subset_idx,
+                        "phase": "update-base",
+                        "source": row["source"],
+                        "target": row["gold"],
+                        "metadata": row.get("metadata", {}),
+                        "train_artifact": str(train_path),
+                        "output_dir": str(train_final_dir),
+                        "training_config": _get_by_dotpath(ctx.cfg, "training.base_update", {}),
+                        "model": _get_by_dotpath(ctx.cfg, "model", {}),
+                        "base_checkpoint": _latest_checkpoint_ref(ctx),
+                        "logging_config": _get_by_dotpath(ctx.cfg, "logging", {}),
+                        "runtime_config": {
+                            "prompts": _get_by_dotpath(ctx.cfg, "prompts", {}),
+                        },
+                    }
+                    for row in train_rows
+                ],
+            )
+            _validate_status_rows(status_rows, phase="update-base")
+            for row in status_rows:
+                maybe_checkpoint = row.get("checkpoint_path")
+                if isinstance(maybe_checkpoint, str) and maybe_checkpoint.strip():
+                    checkpoint_path = Path(maybe_checkpoint)
+                    break
     else:
         raise StepSubsetError(f"Unsupported training runtime mode: {mode}")
 

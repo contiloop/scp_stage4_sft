@@ -27,6 +27,8 @@ from scp_stage4.pipeline.workers.common import (
     validate_phase_response_rows,
 )
 
+_NOOP_COLLAPSE_MARKER = "NOOP_COLLAPSE.json"
+
 
 @dataclass(frozen=True)
 class _ModelRuntime:
@@ -82,6 +84,10 @@ def _dtype_from_config(dtype_value: Any) -> torch.dtype | str | None:
 
 def _is_lora_adapter_path(path: Path) -> bool:
     return path.exists() and (path / "adapter_config.json").exists()
+
+
+def _is_noop_collapse_adapter_path(path: Path) -> bool:
+    return path.exists() and (path / _NOOP_COLLAPSE_MARKER).exists()
 
 
 def _is_model_checkpoint_path(path: Path) -> bool:
@@ -433,25 +439,33 @@ def _load_model(request: Mapping[str, Any]) -> tuple[Any, Any]:
 
     q_tag = str(request.get("q_tag", "q1"))
     collapse_path: Path | None = None
+    collapse_noop = False
     use_q2_adapter_dir_model_ref = False
     if q_tag == "q2":
         collapse_adapter = request.get("collapse_adapter")
         if not isinstance(collapse_adapter, str) or not collapse_adapter.strip():
             raise WorkerContractError("infer-q2 requires non-empty collapse_adapter path")
         collapse_path = Path(collapse_adapter)
+        collapse_noop = _is_noop_collapse_adapter_path(collapse_path)
         if not _is_lora_adapter_path(collapse_path):
-            raise WorkerContractError(
-                "collapse adapter is missing adapter_config.json; "
-                "run train-collapse-lora first"
+            if not collapse_noop:
+                raise WorkerContractError(
+                    "collapse adapter is missing adapter_config.json; "
+                    "run train-collapse-lora first"
+                )
+            print(
+                f"[inference-worker] q2 collapse adapter is no-op; using base model only ({collapse_path})",
+                file=sys.stderr,
             )
-        # Notebook parity path:
-        # load the collapse LoRA directory directly as model_name so Unsloth/PEFT
-        # restores the adapter stack in one step, avoiding hot-load key remap drift.
-        use_q2_adapter_dir_model_ref = True
-        print(
-            f"[inference-worker] q2 load strategy: direct-adapter-model-ref ({collapse_path})",
-            file=sys.stderr,
-        )
+        else:
+            # Notebook parity path:
+            # load the collapse LoRA directory directly as model_name so Unsloth/PEFT
+            # restores the adapter stack in one step, avoiding hot-load key remap drift.
+            use_q2_adapter_dir_model_ref = True
+            print(
+                f"[inference-worker] q2 load strategy: direct-adapter-model-ref ({collapse_path})",
+                file=sys.stderr,
+            )
 
     model_name_for_load = str(collapse_path) if use_q2_adapter_dir_model_ref else runtime.model_ref
     load_in_4bit = bool(
@@ -501,6 +515,10 @@ def _load_model(request: Mapping[str, Any]) -> tuple[Any, Any]:
                     )
                 except Exception:
                     pass
+        elif collapse_noop:
+            # No collapse adapter weights for this subset (all samples filtered by length).
+            # Continue with base model so the pipeline can progress without hard failure.
+            pass
         else:
             assert collapse_path is not None
             model = _attach_lora_adapter(

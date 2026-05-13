@@ -1942,15 +1942,14 @@ def run_unload_collapse_lora(
 
 
 def _select_fragile(scored_rows: Sequence[Mapping[str, Any]], cfg: Mapping[str, Any]) -> list[dict[str, Any]]:
-    threshold = float(
-        _get_by_dotpath(cfg, "qe.scoring.selection.default_rule.require_score_s_gte", 0.0)
-    )
     top_fraction = float(
         _get_by_dotpath(cfg, "qe.scoring.selection.default_rule.top_fraction", 0.1)
     )
 
-    eligible = [dict(row) for row in scored_rows if float(row["score_s"]) >= threshold]
-    eligible_sorted = sorted(eligible, key=lambda row: (-float(row["score_s"]), str(row["id"])))
+    eligible_sorted = sorted(
+        (dict(row) for row in scored_rows),
+        key=lambda row: (-float(row["score_s"]), str(row["id"])),
+    )
 
     keep = max(1, int(len(scored_rows) * top_fraction + 0.999999))
     ranked = eligible_sorted[: min(keep, len(eligible_sorted))]
@@ -1963,7 +1962,7 @@ def _select_fragile(scored_rows: Sequence[Mapping[str, Any]], cfg: Mapping[str, 
             continue
         out = dict(row)
         out["selection_rank"] = rank_by_id[row_id]
-        out["selection_rule"] = "default_rule:score_s_gte_and_top_fraction"
+        out["selection_rule"] = "default_rule:top_fraction"
         selected.append(out)
     return selected
 

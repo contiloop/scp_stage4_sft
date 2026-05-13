@@ -153,16 +153,12 @@ def _score_rows(
 
 
 def _select_fragile(scored_rows: list[dict[str, Any]], cfg: dict[str, Any]) -> list[dict[str, Any]]:
-    threshold = float(
-        _get_by_dotpath(cfg, "qe.scoring.selection.default_rule.require_score_s_gte", 0.0)
-    )
     top_fraction = float(
         _get_by_dotpath(cfg, "qe.scoring.selection.default_rule.top_fraction", 0.1)
     )
 
-    eligible = [row for row in scored_rows if float(row["score_s"]) >= threshold]
     eligible_sorted = sorted(
-        eligible,
+        scored_rows,
         key=lambda r: (-float(r["score_s"]), str(r["id"])),
     )
 

@@ -552,7 +552,6 @@ qe:
     selection:
       policy: configurable
       default_rule:
-        require_score_s_gte: 0.0
         top_fraction: 0.10
       rules: []
 

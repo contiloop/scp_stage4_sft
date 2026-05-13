@@ -25,17 +25,24 @@ def main(argv: list[str] | None = None) -> int:
     schema = validate_phase_request_rows(requests, args=args, context="external_api")
     responses = []
     for row in requests:
-        req_id = str(row.get("request_id", ""))
+        row_dict = dict(row)
+        req_id = str(row_dict.get("request_id", ""))
+        split_name_value = row_dict.get("split_name")
+        if split_name_value is not None and not isinstance(split_name_value, str):
+            split_name_value = str(split_name_value)
         responses.append(
             {
                 "request_id": req_id,
                 "status": "ok",
-                "gold": _gold_for_row(dict(row)),
+                "gold": _gold_for_row(row_dict),
                 "teacher_label": "minor_edit",
+                "thinking_text": "",
+                "split_name": split_name_value,
                 "usage": {
                     "input_tokens": 96,
                     "output_tokens": 72,
                     "total_tokens": 168,
+                    "reasoning_tokens": 0,
                 },
                 "cost": {
                     "currency": "USD",

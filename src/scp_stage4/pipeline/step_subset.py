@@ -2133,6 +2133,7 @@ def _normalize_api_response_row(
     input_tokens = int(usage.get("input_tokens", 0) or 0)
     output_tokens = int(usage.get("output_tokens", 0) or 0)
     total_tokens = int(usage.get("total_tokens", input_tokens + output_tokens) or 0)
+    reasoning_tokens = int(usage.get("reasoning_tokens", 0) or 0)
 
     cost = runtime_resp.get("cost", {})
     if not isinstance(cost, Mapping):
@@ -2145,6 +2146,24 @@ def _normalize_api_response_row(
     error = runtime_resp.get("error")
     if error is not None and not isinstance(error, str):
         error = str(error)
+
+    runtime_split_name = runtime_resp.get("split_name")
+    request_split_name = request_row.get("split_name")
+    split_name: str | None
+    if isinstance(runtime_split_name, str) and runtime_split_name.strip():
+        split_name = runtime_split_name
+    elif isinstance(request_split_name, str) and request_split_name.strip():
+        split_name = request_split_name
+    else:
+        split_name = None
+
+    thinking_text_value = runtime_resp.get("thinking_text")
+    if thinking_text_value is None:
+        thinking_text: str | None = None
+    elif isinstance(thinking_text_value, str):
+        thinking_text = thinking_text_value or None
+    else:
+        thinking_text = str(thinking_text_value) or None
 
     response = {
         "id": request_row["id"],
@@ -2162,12 +2181,15 @@ def _normalize_api_response_row(
         "student": request_row["student"],
         "gold": gold,
         "reason": reason,
+        "split_name": split_name,
+        "thinking_text": thinking_text,
         "prompt_version": prompt_version,
         "prompt_hash": prompt_hash,
         "usage": {
             "input_tokens": input_tokens,
             "output_tokens": output_tokens,
             "total_tokens": total_tokens,
+            "reasoning_tokens": reasoning_tokens,
         },
         "cost": {
             "currency": currency,
@@ -2221,6 +2243,8 @@ def _build_preference_pairs(
                 "error": row.get("error"),
                 "provider": row.get("provider"),
                 "model": row.get("model"),
+                "split_name": row.get("split_name"),
+                "thinking_text": row.get("thinking_text"),
                 "prompt_version": row.get("prompt_version"),
                 "prompt_hash": row.get("prompt_hash"),
                 "usage": row.get("usage"),
@@ -2270,8 +2294,16 @@ def _build_api_requests(
     ctx: PipelineContext,
     selected_rows: Sequence[Mapping[str, Any]],
 ) -> list[dict[str, Any]]:
-    provider = str(_get_by_dotpath(ctx.cfg, "external_api.primary.provider", "openai"))
-    model = str(_get_by_dotpath(ctx.cfg, "external_api.primary.model", "unknown"))
+    from scp_stage4.pipeline.routing import RoutingConfigError, assign_split, parse_routing
+
+    primary_provider = str(_get_by_dotpath(ctx.cfg, "external_api.primary.provider", "openai"))
+    primary_model = str(_get_by_dotpath(ctx.cfg, "external_api.primary.model", "unknown"))
+    routing_cfg = _get_by_dotpath(ctx.cfg, "external_api.routing", {})
+    try:
+        plan = parse_routing(routing_cfg)
+    except RoutingConfigError as exc:
+        raise StepSubsetError(f"external_api.routing invalid: {exc}") from exc
+
     prompt_cfg = _get_by_dotpath(ctx.cfg, "prompts", {})
     if not isinstance(prompt_cfg, Mapping):
         prompt_cfg = {}
@@ -2281,6 +2313,18 @@ def _build_api_requests(
     requests: list[dict[str, Any]] = []
     for row in selected_rows:
         request_id = f"{ctx.run_id}/subsets/subset_{ctx.subset_idx:03d}/{row['id']}/api"
+        if plan.is_weighted:
+            split = assign_split(row_id=str(row["id"]), plan=plan)
+            provider = split.provider
+            model = split.model
+            split_name: str | None = split.name
+            model_params: dict[str, Any] = dict(split.params)
+        else:
+            provider = primary_provider
+            model = primary_model
+            split_name = None
+            model_params = {}
+
         requests.append(
             {
                 "id": row["id"],
@@ -2303,6 +2347,8 @@ def _build_api_requests(
                 "prompt_hash": prompt_hash,
                 "provider": provider,
                 "model": model,
+                "split_name": split_name,
+                "model_params": model_params,
                 "status": "ok",
                 "config_hash": ctx.cfg_hash,
             }

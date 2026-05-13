@@ -7,9 +7,49 @@
       }
     },
     "routing": {
-      "mode": "single",
+      "mode": "weighted",
+      "seed": 42,
       "fallback_enabled": false,
-      "ensemble_enabled": false
+      "ensemble_enabled": false,
+      "splits": [
+        {
+          "name": "gemini-3.1-flash-lite-off",
+          "provider": "gemini",
+          "model": "gemini-3.1-flash-lite",
+          "params": {"thinking_mode": "off"},
+          "weight": 0.7
+        },
+        {
+          "name": "gemini-3.1-flash-lite-dynamic",
+          "provider": "gemini",
+          "model": "gemini-3.1-flash-lite",
+          "params": {"thinking_mode": "dynamic", "thinking_budget": -1},
+          "weight": 0.1
+        },
+        {
+          "name": "gpt-5.5-thinking",
+          "provider": "openai",
+          "model": "gpt-5.5",
+          "params": {"reasoning_effort": "medium", "text_verbosity": "low"},
+          "weight": 0.1
+        },
+        {
+          "name": "opus-4.7-adaptive",
+          "provider": "anthropic",
+          "model": "claude-opus-4-7",
+          "params": {"thinking_mode": "adaptive", "adaptive_effort": "medium", "thinking_display": "summarized"},
+          "weight": 0.1
+        }
+      ]
+    },
+    "concurrency": {
+      "max_workers": 12,
+      "per_provider": {
+        "openai": 4,
+        "anthropic": 4,
+        "gemini": 6
+      },
+      "min_request_interval_sec": 0.0
     },
     "primary": {
       "provider": "openai",
@@ -17,20 +57,26 @@
       "api_key_env": "OPENAI_API_KEY"
     },
     "providers": {
-      "openai": {"enabled": true, "api_key_env": "OPENAI_API_KEY"},
-      "gemini": {"enabled": false, "api_key_env": "GEMINI_API_KEY"},
-      "claude": {"enabled": false, "api_key_env": "ANTHROPIC_API_KEY"},
-      "qwen": {"enabled": false, "api_key_env": "QWEN_API_KEY"},
-      "deepseek": {"enabled": false, "api_key_env": "DEEPSEEK_API_KEY"}
+      "openai":    {"enabled": true,  "api_key_env": "OPENAI_API_KEY"},
+      "anthropic": {"enabled": true,  "api_key_env": "ANTHROPIC_API_KEY"},
+      "gemini":    {"enabled": true,  "api_key_env": "GEMINI_API_KEY"},
+      "claude":    {"enabled": false, "api_key_env": "ANTHROPIC_API_KEY"},
+      "qwen":      {"enabled": false, "api_key_env": "QWEN_API_KEY"},
+      "deepseek":  {"enabled": false, "api_key_env": "DEEPSEEK_API_KEY"}
     },
     "failure": {
-      "retry": 2,
+      "retry": 3,
       "on_error": "skip",
       "max_failure_rate": 0.2,
       "on_failure_rate_exceeded": "fail"
     },
     "output_status": {
       "allowed": ["ok", "skipped", "failed", "filtered", "needs_review"]
+    },
+    "timeouts": {
+      "openai_sec": 120,
+      "anthropic_sec": 180,
+      "gemini_sec": 120
     }
   }
 }

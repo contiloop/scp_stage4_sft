@@ -582,6 +582,10 @@ class ApiRequestRow:
     model: str
     status: StatusValue
     config_hash: str
+    split_name: str | None = None
+    # Free-form per-provider settings such as ``reasoning_effort`` /
+    # ``thinking_mode``. May be omitted (``{}``) for legacy single-provider runs.
+    model_params: dict[str, Any] | None = None
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> "ApiRequestRow":
@@ -605,9 +609,20 @@ class ApiRequestRow:
                 "model",
                 "status",
                 "config_hash",
+                "split_name",
+                "model_params",
             },
             context="api_requests",
         )
+        model_params_raw = data.get("model_params")
+        if model_params_raw is None:
+            model_params: dict[str, Any] | None = None
+        elif isinstance(model_params_raw, Mapping):
+            model_params = dict(model_params_raw)
+        else:
+            raise SchemaValidationError(
+                "api_requests.model_params must be a mapping when present"
+            )
         return cls(
             id=_require_str(data, "id", context="api_requests"),
             row_id=_require_str(data, "row_id", context="api_requests"),
@@ -627,6 +642,8 @@ class ApiRequestRow:
             model=_require_str(data, "model", context="api_requests"),
             status=_require_status(data, "status", context="api_requests"),
             config_hash=_require_str(data, "config_hash", context="api_requests"),
+            split_name=_optional_str(data, "split_name", context="api_requests"),
+            model_params=model_params,
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -645,6 +662,8 @@ class ApiRequestRow:
             "prompt_hash": self.prompt_hash,
             "provider": self.provider,
             "model": self.model,
+            "split_name": self.split_name,
+            "model_params": self.model_params,
             "status": self.status,
             "config_hash": self.config_hash,
         }
@@ -655,19 +674,38 @@ class ApiUsage:
     input_tokens: int
     output_tokens: int
     total_tokens: int
+    # Number of reasoning / thinking tokens included inside ``output_tokens``.
+    # Optional; defaults to 0 when the provider does not expose a count or when
+    # the request did not trigger reasoning.
+    reasoning_tokens: int = 0
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> "ApiUsage":
         data = _ensure_mapping(data, context="api_usage")
         _reject_extra_keys(
             data,
-            allowed={"input_tokens", "output_tokens", "total_tokens"},
+            allowed={"input_tokens", "output_tokens", "total_tokens", "reasoning_tokens"},
             context="api_usage",
         )
+        reasoning_value = data.get("reasoning_tokens", 0)
+        if reasoning_value is None:
+            reasoning_tokens = 0
+        else:
+            try:
+                reasoning_tokens = int(reasoning_value)
+            except (TypeError, ValueError) as exc:
+                raise SchemaValidationError(
+                    "api_usage.reasoning_tokens must be an integer"
+                ) from exc
+        if reasoning_tokens < 0:
+            raise SchemaValidationError(
+                "api_usage.reasoning_tokens must be >= 0"
+            )
         return cls(
             input_tokens=_require_int(data, "input_tokens", context="api_usage"),
             output_tokens=_require_int(data, "output_tokens", context="api_usage"),
             total_tokens=_require_int(data, "total_tokens", context="api_usage"),
+            reasoning_tokens=reasoning_tokens,
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -675,6 +713,7 @@ class ApiUsage:
             "input_tokens": self.input_tokens,
             "output_tokens": self.output_tokens,
             "total_tokens": self.total_tokens,
+            "reasoning_tokens": self.reasoning_tokens,
         }
 
 
@@ -724,6 +763,11 @@ class ApiRow:
     attempt: int | None = None
     error: str | None = None
     config_hash: str | None = None
+    # Routing metadata (optional; populated when external_api.routing.mode='weighted').
+    split_name: str | None = None
+    # Summarized chain-of-thought returned by Claude adaptive / Gemini dynamic
+    # thinking; empty for providers that hide reasoning (OpenAI) or for off mode.
+    thinking_text: str | None = None
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> "ApiRow":
@@ -754,6 +798,8 @@ class ApiRow:
                 "attempt",
                 "error",
                 "config_hash",
+                "split_name",
+                "thinking_text",
             },
             context="api",
         )
@@ -797,6 +843,8 @@ class ApiRow:
             attempt=_optional_int(data, "attempt", context="api"),
             error=_optional_str(data, "error", context="api"),
             config_hash=_optional_str(data, "config_hash", context="api"),
+            split_name=_optional_str(data, "split_name", context="api"),
+            thinking_text=_optional_str(data, "thinking_text", context="api"),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -816,6 +864,8 @@ class ApiRow:
             "gold": self.gold,
             "status": self.status,
             "reason": self.reason,
+            "split_name": self.split_name,
+            "thinking_text": self.thinking_text,
             "prompt_version": self.prompt_version,
             "prompt_hash": self.prompt_hash,
             "usage": self.usage.to_dict() if self.usage is not None else None,
@@ -853,6 +903,8 @@ class PreferencePairRow:
     latency_ms: float | None = None
     attempt: int | None = None
     config_hash: str | None = None
+    split_name: str | None = None
+    thinking_text: str | None = None
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> "PreferencePairRow":
@@ -884,6 +936,8 @@ class PreferencePairRow:
                 "latency_ms",
                 "attempt",
                 "config_hash",
+                "split_name",
+                "thinking_text",
             },
             context="preference_pairs",
         )
@@ -942,6 +996,8 @@ class PreferencePairRow:
             latency_ms=_optional_float(data, "latency_ms", context="preference_pairs"),
             attempt=_optional_int(data, "attempt", context="preference_pairs"),
             config_hash=_optional_str(data, "config_hash", context="preference_pairs"),
+            split_name=_optional_str(data, "split_name", context="preference_pairs"),
+            thinking_text=_optional_str(data, "thinking_text", context="preference_pairs"),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -963,6 +1019,8 @@ class PreferencePairRow:
             "error": self.error,
             "provider": self.provider,
             "model": self.model,
+            "split_name": self.split_name,
+            "thinking_text": self.thinking_text,
             "prompt_version": self.prompt_version,
             "prompt_hash": self.prompt_hash,
             "usage": self.usage.to_dict() if self.usage is not None else None,

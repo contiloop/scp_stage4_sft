@@ -2289,6 +2289,33 @@ def _upsert_run_level_preference_pairs(
     return validate_artifact_rows(_as_rows(read_jsonl(run_path)), "preference_pairs")
 
 
+def _upsert_run_level_ood_eval(
+    *,
+    ctx: PipelineContext,
+    log_metrics: Mapping[str, Any],
+) -> dict[str, Any]:
+    run_path = ctx.run_root / "ood_eval.jsonl"
+    record = {
+        "run_id": ctx.run_id,
+        "subset_idx": ctx.subset_idx,
+        "metrics": dict(log_metrics),
+    }
+
+    existing_rows: list[dict[str, Any]] = []
+    if run_path.exists():
+        existing_rows = _as_rows(read_jsonl(run_path))
+
+    carried = [
+        row
+        for row in existing_rows
+        if int(row.get("subset_idx", -1)) != ctx.subset_idx
+    ]
+    merged_rows = carried + [record]
+    merged_rows.sort(key=lambda row: int(row.get("subset_idx", -1)))
+    write_jsonl(run_path, merged_rows, ensure_ascii=False)
+    return record
+
+
 def _build_api_requests(
     *,
     ctx: PipelineContext,
@@ -3394,6 +3421,11 @@ def run_eval_ood(
     if xcomet_scores:
         log_metrics["ood/xcomet_mean"] = float(_mean(xcomet_scores))
 
+    monitor_record = _upsert_run_level_ood_eval(
+        ctx=ctx,
+        log_metrics=log_metrics,
+    )
+
     ctx.logger.log_event(
         context=_context_for_phase(ctx, "eval-ood"),
         event_type="phase_completed",
@@ -3415,6 +3447,8 @@ def run_eval_ood(
         "rows": len(generated_rows),
         "summary_path": str(summary_path),
         "rows_path": str(rows_path),
+        "monitor_path": str(ctx.run_root / "ood_eval.jsonl"),
+        "monitor_record": monitor_record,
         "metrics": log_metrics,
     }
 

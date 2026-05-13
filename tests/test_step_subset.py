@@ -134,9 +134,11 @@ def test_run_eval_ood_writes_metricx_bleu_chrf_artifacts() -> None:
         rows_path = run_root / "eval" / "ood_test" / "subset_000.rows.jsonl"
         summary_path = run_root / "eval" / "ood_test" / "subset_000.summary.json"
         history_path = run_root / "eval" / "ood_test" / "history.jsonl"
+        monitor_path = run_root / "ood_eval.jsonl"
         assert rows_path.exists()
         assert summary_path.exists()
         assert history_path.exists()
+        assert monitor_path.exists()
 
         rows = read_jsonl(rows_path)
         assert rows, "ood eval rows should not be empty"
@@ -151,6 +153,22 @@ def test_run_eval_ood_writes_metricx_bleu_chrf_artifacts() -> None:
         assert "xcomet_mean" in eval_summary
         assert "bleu_mean" in eval_summary
         assert "chrf_mean" in eval_summary
+
+        monitor_rows = read_jsonl(monitor_path)
+        assert len(monitor_rows) == 1
+        monitor = monitor_rows[0]
+        assert monitor["run_id"] == run_id
+        assert monitor["subset_idx"] == 0
+        assert set(monitor) == {"run_id", "subset_idx", "metrics"}
+        assert monitor["metrics"]["ood/rows"] == len(rows)
+        assert "ood/xcomet_mean" in monitor["metrics"]
+
+        run_eval_ood(
+            config_path="configs/scp_stage4.yaml",
+            run_id_override=run_id,
+            subset_idx=0,
+        )
+        assert len(read_jsonl(monitor_path)) == 1
     finally:
         _cleanup(run_id)
 

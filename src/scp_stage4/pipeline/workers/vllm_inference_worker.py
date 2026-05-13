@@ -13,6 +13,10 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from scp_stage4.data import read_jsonl, write_jsonl
+from scp_stage4.pipeline.prompting import (
+    PromptConfigError,
+    render_translation_prompt,
+)
 from scp_stage4.pipeline.workers.common import (
     WorkerContractError,
     parse_worker_args,
@@ -25,13 +29,34 @@ def _as_dict(value: Any) -> dict[str, Any]:
     return dict(value) if isinstance(value, Mapping) else {}
 
 
-def _build_prompt(source: str) -> str:
-    return (
-        "You are a professional English to Korean translator.\n"
-        "Translate the English input into natural Korean.\n"
-        "Return only the Korean translation.\n\n"
-        f"English:\n{source}\n\nKorean:\n"
-    )
+def _build_prompt(source: str, request: Mapping[str, Any] | None = None) -> str:
+    if request is None:
+        return (
+            "You are a professional English to Korean translator.\n"
+            "Translate the English input into natural Korean.\n"
+            "Return only the Korean translation.\n\n"
+            f"English:\n{source}\n\nKorean:\n"
+        )
+
+    runtime_cfg = _as_dict(request.get("runtime_config"))
+    prompts_cfg = _as_dict(runtime_cfg.get("prompts"))
+    row_id = str(request.get("row_id") or request.get("id") or "")
+    subset_idx_raw = request.get("subset_idx")
+    subset_idx: int | None = None
+    if isinstance(subset_idx_raw, int) and not isinstance(subset_idx_raw, bool):
+        subset_idx = subset_idx_raw
+
+    try:
+        prompt, _ = render_translation_prompt(
+            prompts=prompts_cfg,
+            source=source,
+            row_id=row_id,
+            subset_idx=subset_idx,
+            metadata=_as_dict(request.get("metadata")),
+        )
+    except PromptConfigError as exc:
+        raise WorkerContractError(str(exc)) from exc
+    return prompt
 
 
 def _is_lora_adapter_path(path: Path) -> bool:
@@ -251,7 +276,7 @@ def _generate_all(
             raise WorkerContractError(
                 f"inference request row missing source text (id={row.get('id')})"
             )
-        prompts.append(_build_prompt(source))
+        prompts.append(_build_prompt(source, request=row))
         sampling_params_list.append(_build_sampling_params(row))
 
     q_tag = str(requests[0].get("q_tag", "q1"))

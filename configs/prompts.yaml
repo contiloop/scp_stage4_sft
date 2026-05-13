@@ -1,6 +1,35 @@
 {
   "prompts": {
-    "version": "teacher_correction_v1",
-    "preserve_source_in_parentheses": false
+    "translation": {
+      "version": "translation_v1",
+      "src_lang_name": "English",
+      "src_locale": "en-US",
+      "tgt_lang_name": "Korean",
+      "tgt_locale": "ko-KR",
+      "template_seed": 42,
+      "selection_seed_scope": "row_id",
+      "templates": [
+        "You are a professional {src_lang_name} ({src_locale}) to {tgt_lang_name} ({tgt_locale}) translator. Your goal is to accurately convey the meaning and nuances of the original {src_lang_name} text while adhering to {tgt_lang_name} grammar, vocabulary, and cultural sensitivities. Produce only the {tgt_lang_name} translation, without any additional explanations or commentary. Please translate the following {src_lang_name} text into {tgt_lang_name}: {src}",
+        "Translate the following text from {src_lang_name} to {tgt_lang_name}: {src}",
+        "What does this sentence mean in {tgt_lang_name} from {src_lang_name}: {src}",
+        "How do you translate this sentence into {tgt_lang_name} from {src_lang_name}: {src}",
+        "Translate the following text to {tgt_lang_name}: {src}"
+      ]
+    },
+    "sft": {
+      "version": "sft_translation_v1",
+      "instruction_template": "### Instruction:\nTranslate the English source into Korean.\n\n### Source:\n{source}\n\n",
+      "response_template": "### Response:\n"
+    },
+    "teacher_correction": {
+      "version": "teacher_correction_v1",
+      "system_template": "You are a professional English-to-Korean translator and translation post-editor. Your primary specialization is finance, economics, and market commentary, while also handling general business, technology, science, and news with publication-grade Korean.",
+      "user_template": "You are an English-to-Korean translation post-editor.\nGiven SOURCE and DRAFT, produce the best final Korean translation.\nSilently infer domain, audience, and register (finance/market vs general business/tech/science/news) and choose terminology and tone accordingly.\n\nLabel policy:\n- no_change: DRAFT is already accurate and natural.\n- minor_edit: only small wording or fluency fixes are needed.\n- major_edit: substantial edits are needed, but DRAFT still provides useful structure.\n- rewrite: DRAFT quality is poor (meaning distortion, omission, hallucination, or severe unnaturalness). In this case, ignore DRAFT phrasing and re-translate from SOURCE from scratch.\n- invalid: SOURCE is not translatable or invalid. Line 2+ should contain a short Korean reason.\n\nOutput contract (strict):\nLine 1: one label in [no_change, minor_edit, major_edit, rewrite, invalid]\nLine 2+: final Korean translation only (or short Korean reason only when label is invalid)\nDo not output any explanation, markdown, bullets, or prefixes.\n\nTranslation rules:\n1) Preserve all numbers, decimals, percentages, basis points, currency symbols, and date formats exactly as written.\n2) Preserve company names, person names, tickers, and indices in original form unless a widely used Korean name exists.\n3) Keep English acronyms as-is (GDP, PCE, FOMC, CPI, AI, GPU, mRNA, etc.).\n4) Keep parenthetical expressions in the same position when they appear in SOURCE.\n5) Preserve full meaning; do not omit, summarize, or add information.\n\n[SOURCE]\n{source}\n\n[METADATA]\n{metadata_json}\n\n[DRAFT]\n{student}\n",
+      "metadata": {
+        "include": true,
+        "render_format": "json",
+        "allowed_fields": ["dataset", "document_type", "text_role", "title"]
+      }
+    }
   }
 }

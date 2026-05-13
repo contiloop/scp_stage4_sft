@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import random
 from pathlib import Path
@@ -14,6 +13,7 @@ from scp_stage4.config.loader import compose_config
 from scp_stage4.config.validator import validate_config
 from scp_stage4.logging import LocalJsonlLogger, RequiredLogContext
 from scp_stage4.pipeline.io_utils import iter_jsonl, write_jsonl
+from scp_stage4.pipeline.prompting import teacher_prompt_hash, teacher_prompt_version
 from scp_stage4.schema import validate_artifact_rows
 
 
@@ -192,10 +192,8 @@ def _make_api_artifacts(
     prompt_cfg = _get_by_dotpath(cfg, "prompts", {})
     if not isinstance(prompt_cfg, dict):
         prompt_cfg = {}
-    prompt_version = str(prompt_cfg.get("version", "teacher_correction_v1"))
-    prompt_hash = hashlib.sha256(
-        json.dumps(prompt_cfg, ensure_ascii=False, sort_keys=True).encode("utf-8")
-    ).hexdigest()
+    prompt_version = teacher_prompt_version(prompt_cfg)
+    prompt_hash = teacher_prompt_hash(prompt_cfg)
 
     for row in selected_rows:
         request_id = f"{run_id}/subsets/subset_000/{row['id']}/api"

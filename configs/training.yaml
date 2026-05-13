@@ -15,7 +15,6 @@
       "num_train_epochs": 1,
       "dropout": 0.0,
       "bias": "none",
-      "response_template": "### Response:\n",
       "batching": {
         "per_device_train_batch_size": 64,
         "gradient_accumulation_steps": 1,
@@ -61,8 +60,7 @@
         "per_device_train_batch_size": 8,
         "gradient_accumulation_steps": 4,
         "per_device_eval_batch_size": 8,
-        "packing": false,
-        "response_template": "### Response:\n"
+        "packing": false
       },
       "data": {
         "use_no_change": true

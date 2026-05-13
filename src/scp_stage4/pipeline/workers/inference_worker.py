@@ -16,6 +16,10 @@ from typing import Any, Mapping, Sequence
 import torch
 
 from scp_stage4.data import read_jsonl, write_jsonl
+from scp_stage4.pipeline.prompting import (
+    PromptConfigError,
+    render_translation_prompt,
+)
 from scp_stage4.pipeline.workers.common import (
     WorkerContractError,
     parse_worker_args,
@@ -124,13 +128,34 @@ def _resolve_runtime(request: Mapping[str, Any]) -> _ModelRuntime:
     )
 
 
-def _build_prompt(source: str) -> str:
-    return (
-        "You are a professional English to Korean translator.\n"
-        "Translate the English input into natural Korean.\n"
-        "Return only the Korean translation.\n\n"
-        f"English:\n{source}\n\nKorean:\n"
-    )
+def _build_prompt(source: str, request: Mapping[str, Any] | None = None) -> str:
+    if request is None:
+        return (
+            "You are a professional English to Korean translator.\n"
+            "Translate the English input into natural Korean.\n"
+            "Return only the Korean translation.\n\n"
+            f"English:\n{source}\n\nKorean:\n"
+        )
+
+    runtime_cfg = _as_dict(request.get("runtime_config"))
+    prompts_cfg = _as_dict(runtime_cfg.get("prompts"))
+    row_id = str(request.get("row_id") or request.get("id") or "")
+    subset_idx_raw = request.get("subset_idx")
+    subset_idx: int | None = None
+    if isinstance(subset_idx_raw, int) and not isinstance(subset_idx_raw, bool):
+        subset_idx = subset_idx_raw
+
+    try:
+        prompt, _ = render_translation_prompt(
+            prompts=prompts_cfg,
+            source=source,
+            row_id=row_id,
+            subset_idx=subset_idx,
+            metadata=_as_dict(request.get("metadata")),
+        )
+    except PromptConfigError as exc:
+        raise WorkerContractError(str(exc)) from exc
+    return prompt
 
 
 def _resolve_unsloth_runtime(request: Mapping[str, Any]) -> _UnslothRuntime:
@@ -528,7 +553,7 @@ def _request_prompt(request: Mapping[str, Any]) -> str:
     source = str(request.get("source", "")).strip()
     if not source:
         raise WorkerContractError("inference request row missing source text")
-    return _build_prompt(source)
+    return _build_prompt(source, request=request)
 
 
 def _build_batch_items(

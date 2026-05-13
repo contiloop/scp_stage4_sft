@@ -10,6 +10,11 @@ import time
 from typing import Any, Mapping
 
 from scp_stage4.data import read_jsonl, write_jsonl
+from scp_stage4.pipeline.prompting import (
+    PromptConfigError,
+    render_teacher_user_prompt,
+    teacher_system_prompt,
+)
 from scp_stage4.pipeline.workers.common import (
     WorkerContractError,
     parse_worker_args,
@@ -22,20 +27,6 @@ _LABELS = {"no_change", "minor_edit", "major_edit", "rewrite", "invalid"}
 
 def _as_dict(value: Any) -> dict[str, Any]:
     return dict(value) if isinstance(value, Mapping) else {}
-
-
-def _prompt_for_row(row: Mapping[str, Any]) -> str:
-    source = str(row.get("source", ""))
-    student = str(row.get("student", ""))
-    return (
-        "You are an English-to-Korean translation post-editor.\n"
-        "Given the source and a draft Korean translation, return exactly:\n"
-        "Line 1: one label in [no_change, minor_edit, major_edit, rewrite, invalid]\n"
-        "Line 2+: corrected full Korean translation only.\n"
-        "If the sample is invalid, line 2+ should contain a short Korean reason.\n\n"
-        f"[SOURCE]\n{source}\n\n"
-        f"[DRAFT]\n{student}\n"
-    )
 
 
 def _split_label_and_text(output_text: str) -> tuple[str, str]:
@@ -110,7 +101,13 @@ def _openai_call(row: Mapping[str, Any]) -> dict[str, Any]:
     if not model:
         raise WorkerContractError("external_api request row missing model")
 
-    prompt = _prompt_for_row(row)
+    runtime_cfg = _as_dict(row.get("runtime_config"))
+    prompts_cfg = _as_dict(runtime_cfg.get("prompts"))
+    try:
+        prompt = render_teacher_user_prompt(prompts=prompts_cfg, row=row)
+        system_prompt = teacher_system_prompt(prompts_cfg)
+    except PromptConfigError as exc:
+        raise WorkerContractError(str(exc)) from exc
     client = OpenAI(api_key=api_key)
     started = time.perf_counter()
     response = client.responses.create(
@@ -119,7 +116,7 @@ def _openai_call(row: Mapping[str, Any]) -> dict[str, Any]:
         input=[
             {
                 "role": "system",
-                "content": [{"type": "input_text", "text": "You are a precise translation editor."}],
+                "content": [{"type": "input_text", "text": system_prompt}],
             },
             {"role": "user", "content": [{"type": "input_text", "text": prompt}]},
         ],

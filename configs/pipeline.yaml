@@ -32,7 +32,12 @@
       "runtime": "qe_subprocess",
       "source_column": "Source_En",
       "reference_column": "Target_Ko",
-      "metrics": ["xcomet", "BLEU", "chrF"]
+      "metrics": ["xcomet", "BLEU", "chrF"],
+      "metric_settings": {
+        "xcomet": {
+          "model_name": "Unbabel/wmt22-comet-da"
+        }
+      }
     }
   }
 }

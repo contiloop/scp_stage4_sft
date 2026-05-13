@@ -37,6 +37,7 @@ _API_RUNTIME_MODES = {"mock", "subprocess"}
 _TRAINING_RUNTIME_MODES = {"mock", "subprocess"}
 _PREPARE_DATA_INTERMEDIATE_FORMATS = {"parquet", "jsonl"}
 _INFERENCE_MULTI_GPU_SHARD_STRATEGIES = {"order_split", "row_id_hash"}
+_PROMPT_SELECTION_SCOPES = {"row_id", "row_id_subset"}
 
 
 def _err(errors: list[str], message: str) -> None:
@@ -161,19 +162,6 @@ def _validate_training_runtime(training: dict[str, Any], errors: list[str]) -> N
                 )
 
 
-def _resolve_training_response_template(
-    section_cfg: Mapping[str, Any],
-) -> Any:
-    if not isinstance(section_cfg, Mapping):
-        return None
-    batching_cfg = section_cfg.get("batching")
-    if isinstance(batching_cfg, Mapping):
-        candidate = batching_cfg.get("response_template")
-        if isinstance(candidate, str) and candidate.strip():
-            return candidate
-    return section_cfg.get("response_template")
-
-
 def validate_config(cfg: dict[str, Any]) -> None:
     errors: list[str] = []
 
@@ -188,6 +176,7 @@ def validate_config(cfg: dict[str, Any]) -> None:
     training = _as_dict(cfg.get("training", {}), "training", errors)
     external_api = _as_dict(cfg.get("external_api", {}), "external_api", errors)
     logging_cfg = _as_dict(cfg.get("logging", {}), "logging", errors)
+    prompts_cfg = _as_dict(cfg.get("prompts", {}), "prompts", errors)
 
     max_length = _require_number(model, "max_length", errors)
     max_seq_length = model.get("max_seq_length")
@@ -604,22 +593,70 @@ def validate_config(cfg: dict[str, Any]) -> None:
         _err(errors, "training.backend must be 'unsloth'")
     _validate_training_runtime(training, errors)
     collapse_lora = _as_dict(training.get("collapse_lora", {}), "training.collapse_lora", errors)
-    collapse_response_template = _resolve_training_response_template(collapse_lora)
-    if not isinstance(collapse_response_template, str) or not collapse_response_template.strip():
-        _err(
-            errors,
-            "training.collapse_lora.response_template (or training.collapse_lora.batching.response_template) must be a non-empty string",
-        )
     base_update = _as_dict(training.get("base_update", {}), "training.base_update", errors)
     base_update_mode = base_update.get("mode")
     if base_update_mode not in {"lora", "full_weight"}:
         _err(errors, "training.base_update.mode must be 'lora' or 'full_weight'")
-    base_response_template = _resolve_training_response_template(base_update)
-    if not isinstance(base_response_template, str) or not base_response_template.strip():
+
+    translation_prompts = _as_dict(prompts_cfg.get("translation", {}), "prompts.translation", errors)
+    translation_templates = translation_prompts.get("templates")
+    if not isinstance(translation_templates, list) or not translation_templates:
+        _err(errors, "prompts.translation.templates must be a non-empty list")
+    else:
+        for idx, template in enumerate(translation_templates):
+            if not isinstance(template, str) or not template.strip():
+                _err(errors, f"prompts.translation.templates[{idx}] must be a non-empty string")
+    template_seed = translation_prompts.get("template_seed")
+    if template_seed is not None and (
+        isinstance(template_seed, bool) or not isinstance(template_seed, int)
+    ):
+        _err(errors, "prompts.translation.template_seed must be an integer")
+    selection_scope = translation_prompts.get("selection_seed_scope", "row_id")
+    if not isinstance(selection_scope, str) or selection_scope not in _PROMPT_SELECTION_SCOPES:
         _err(
             errors,
-            "training.base_update.batching.response_template (or training.base_update.response_template) must be a non-empty string",
+            "prompts.translation.selection_seed_scope must be one of: "
+            + ", ".join(sorted(_PROMPT_SELECTION_SCOPES)),
         )
+
+    sft_prompts = _as_dict(prompts_cfg.get("sft", {}), "prompts.sft", errors)
+    instruction_template = sft_prompts.get("instruction_template")
+    if not isinstance(instruction_template, str) or not instruction_template.strip():
+        _err(errors, "prompts.sft.instruction_template must be a non-empty string")
+    response_template = sft_prompts.get("response_template")
+    if not isinstance(response_template, str) or not response_template.strip():
+        _err(errors, "prompts.sft.response_template must be a non-empty string")
+
+    teacher_prompts = _as_dict(
+        prompts_cfg.get("teacher_correction", {}),
+        "prompts.teacher_correction",
+        errors,
+    )
+    teacher_system_template = teacher_prompts.get("system_template")
+    if not isinstance(teacher_system_template, str) or not teacher_system_template.strip():
+        _err(errors, "prompts.teacher_correction.system_template must be a non-empty string")
+    teacher_user_template = teacher_prompts.get("user_template")
+    if not isinstance(teacher_user_template, str) or not teacher_user_template.strip():
+        _err(errors, "prompts.teacher_correction.user_template must be a non-empty string")
+    teacher_metadata = _as_dict(
+        teacher_prompts.get("metadata", {}),
+        "prompts.teacher_correction.metadata",
+        errors,
+    )
+    render_format = teacher_metadata.get("render_format", "json")
+    if not isinstance(render_format, str) or render_format not in {"json", "kv"}:
+        _err(errors, "prompts.teacher_correction.metadata.render_format must be one of: json, kv")
+    allowed_fields = teacher_metadata.get("allowed_fields")
+    if allowed_fields is not None:
+        if not isinstance(allowed_fields, list):
+            _err(errors, "prompts.teacher_correction.metadata.allowed_fields must be a list")
+        else:
+            for idx, field in enumerate(allowed_fields):
+                if not isinstance(field, str) or not field.strip():
+                    _err(
+                        errors,
+                        f"prompts.teacher_correction.metadata.allowed_fields[{idx}] must be a non-empty string",
+                    )
     lora_cfg = _as_dict(base_update.get("lora", {}), "training.base_update.lora", errors)
     target_modules = lora_cfg.get("target_modules")
     if target_modules is not None:

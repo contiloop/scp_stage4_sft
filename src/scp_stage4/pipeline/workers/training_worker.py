@@ -19,6 +19,11 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from scp_stage4.data import read_jsonl, write_jsonl
+from scp_stage4.pipeline.prompting import (
+    PromptConfigError,
+    render_sft_text,
+    sft_response_template,
+)
 from scp_stage4.pipeline.workers.common import (
     WorkerContractError,
     parse_worker_args,
@@ -201,16 +206,28 @@ def _resolve_train_runtime(row: Mapping[str, Any]) -> _TrainRuntime:
     )
 
 
-def _format_sft_text(source: str, target: str, *, response_template: str) -> str:
-    return (
-        "### Instruction:\n"
-        "Translate the English source into Korean.\n\n"
-        f"### Source:\n{source}\n\n"
-        f"{response_template}{target}"
-    )
+def _format_sft_text(
+    source: str,
+    target: str,
+    *,
+    prompts_cfg: Mapping[str, Any] | None,
+) -> str:
+    try:
+        return render_sft_text(
+            prompts=prompts_cfg,
+            source=source,
+            target=target,
+        )
+    except PromptConfigError as exc:
+        raise WorkerContractError(str(exc)) from exc
 
 
-def _build_dataset(rows: list[dict[str, Any]], tokenizer: Any, *, response_template: str) -> Any:
+def _build_dataset(
+    rows: list[dict[str, Any]],
+    tokenizer: Any,
+    *,
+    prompts_cfg: Mapping[str, Any] | None,
+) -> Any:
     try:
         from datasets import Dataset
     except ModuleNotFoundError as exc:
@@ -228,7 +245,7 @@ def _build_dataset(rows: list[dict[str, Any]], tokenizer: Any, *, response_templ
                 "text": _format_sft_text(
                     source,
                     target,
-                    response_template=response_template,
+                    prompts_cfg=prompts_cfg,
                 )
                 + (eos if eos else ""),
             }
@@ -481,6 +498,13 @@ def _resolve_wandb_report_to(
 
 
 def _resolve_response_template(train_cfg: Mapping[str, Any], *, phase: str) -> str:
+    runtime_prompts = _as_dict(_as_dict(train_cfg).get("runtime_prompts"))
+    if runtime_prompts:
+        try:
+            return sft_response_template(runtime_prompts)
+        except PromptConfigError as exc:
+            raise WorkerContractError(str(exc)) from exc
+
     batching_cfg = _as_dict(train_cfg.get("batching"))
     candidate = batching_cfg.get("response_template")
     if not isinstance(candidate, str) or not candidate.strip():
@@ -488,7 +512,7 @@ def _resolve_response_template(train_cfg: Mapping[str, Any], *, phase: str) -> s
     if not isinstance(candidate, str) or not candidate.strip():
         raise WorkerContractError(
             f"{phase} requires non-empty response_template config "
-            "(training.<phase>.batching.response_template or training.<phase>.response_template)"
+            "(prompts.sft.response_template or training.<phase>.batching.response_template)"
         )
     return candidate
 
@@ -714,14 +738,20 @@ def _run_sft_train(
     logging_cfg: Mapping[str, Any] | None = None,
     phase: str | None = None,
     is_main_process: bool = True,
+    prompts_cfg: Mapping[str, Any] | None = None,
 ) -> tuple[Path, Path | None]:
-    response_template = _resolve_response_template(train_cfg, phase=phase or "training")
+    train_cfg_with_prompts = dict(train_cfg)
+    if prompts_cfg:
+        train_cfg_with_prompts["runtime_prompts"] = dict(prompts_cfg)
+    response_template = _resolve_response_template(
+        train_cfg_with_prompts, phase=phase or "training"
+    )
     model, tokenizer = _load_unsloth_model(runtime)
     if mode == "full_weight":
         model = _prepare_full_weight_model(model)
     else:
         model = _ensure_lora_model(model=model, runtime=runtime, lora_cfg=lora_cfg, seed=seed)
-    dataset = _build_dataset(rows, tokenizer, response_template=response_template)
+    dataset = _build_dataset(rows, tokenizer, prompts_cfg=prompts_cfg)
     trainer = _instantiate_trainer(
         model=model,
         tokenizer=tokenizer,
@@ -766,6 +796,14 @@ def _phase(rows: list[dict[str, Any]]) -> str:
     return str(rows[0].get("phase", "update-base"))
 
 
+def _resolve_runtime_prompts_cfg(row: Mapping[str, Any]) -> dict[str, Any]:
+    runtime_cfg = _as_dict(row.get("runtime_config"))
+    prompts_cfg = _as_dict(runtime_cfg.get("prompts"))
+    if prompts_cfg:
+        return prompts_cfg
+    return _as_dict(row.get("prompts"))
+
+
 def _collapse_train(
     rows: list[dict[str, Any]],
     *,
@@ -778,7 +816,7 @@ def _collapse_train(
     adapter_path.mkdir(parents=True, exist_ok=True)
 
     collapse_cfg = _as_dict(first.get("training_config"))
-    response_template = _resolve_response_template(collapse_cfg, phase="train-collapse-lora")
+    prompts_cfg = _resolve_runtime_prompts_cfg(first)
     # Collapse config does not include target modules by default; use project baseline.
     lora_cfg = {
         "rank": collapse_cfg.get("rank", 4),
@@ -805,9 +843,7 @@ def _collapse_train(
             "per_device_train_batch_size": _as_positive_int(batching_cfg.get("per_device_train_batch_size"), 1),
             "gradient_accumulation_steps": _as_positive_int(batching_cfg.get("gradient_accumulation_steps"), 1),
             "packing": bool(batching_cfg.get("packing", False)),
-            "response_template": response_template,
         },
-        "response_template": response_template,
     }
 
     # Save collapse adapter as output_dir/main_adapter first, then move files up.
@@ -823,6 +859,7 @@ def _collapse_train(
         logging_cfg=_as_dict(first.get("logging_config")),
         phase="train-collapse-lora",
         is_main_process=is_main_process,
+        prompts_cfg=prompts_cfg,
     )
     if is_main_process and adapter_tmp.exists():
         for item in adapter_tmp.iterdir():
@@ -886,6 +923,7 @@ def _update_base(
     output_dir.mkdir(parents=True, exist_ok=True)
 
     training_cfg = _as_dict(first.get("training_config"))
+    prompts_cfg = _resolve_runtime_prompts_cfg(first)
     update_mode = str(training_cfg.get("mode", "lora"))
     base_lora_cfg = _as_dict(training_cfg.get("lora"))
     lora_cfg = {
@@ -907,6 +945,7 @@ def _update_base(
         logging_cfg=_as_dict(first.get("logging_config")),
         phase="update-base",
         is_main_process=is_main_process,
+        prompts_cfg=prompts_cfg,
     )
     effective_checkpoint = merged_dir if merged_dir is not None else adapter_dir
     checkpoint_state: dict[str, Any] = {

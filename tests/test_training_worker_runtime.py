@@ -54,3 +54,11 @@ def test_resolve_response_template_raises_when_missing() -> None:
     except WorkerContractError:
         return
     raise AssertionError("expected WorkerContractError for missing response_template")
+
+
+def test_resolve_response_template_from_runtime_prompts() -> None:
+    value = _resolve_response_template(
+        {"runtime_prompts": {"sft": {"response_template": "### YAML:\n"}}},
+        phase="update-base",
+    )
+    assert value == "### YAML:\n"

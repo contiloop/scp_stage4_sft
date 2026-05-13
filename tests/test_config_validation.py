@@ -201,15 +201,15 @@ class ConfigValidationTests(unittest.TestCase):
         cfg["inference"]["runtime"]["multi_gpu"]["shard_strategy"] = "row_id_hash"
         validate_config(cfg)
 
-    def test_training_collapse_response_template_is_required(self) -> None:
+    def test_prompts_sft_response_template_is_required(self) -> None:
         cfg = compose_config("configs/scp_stage4.yaml")
-        cfg["training"]["collapse_lora"]["response_template"] = ""
+        cfg["prompts"]["sft"]["response_template"] = ""
         with self.assertRaises(ConfigValidationError):
             validate_config(cfg)
 
-    def test_training_base_update_response_template_is_required(self) -> None:
+    def test_prompts_translation_templates_must_be_non_empty(self) -> None:
         cfg = compose_config("configs/scp_stage4.yaml")
-        cfg["training"]["base_update"]["batching"]["response_template"] = ""
+        cfg["prompts"]["translation"]["templates"] = []
         with self.assertRaises(ConfigValidationError):
             validate_config(cfg)
 

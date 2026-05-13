@@ -26,6 +26,7 @@ from scp_stage4.config.loader import compose_config
 from scp_stage4.config.validator import validate_config
 from scp_stage4.data import read_jsonl, validate_row_id_preservation, write_jsonl
 from scp_stage4.logging import LocalJsonlLogger, RequiredLogContext
+from scp_stage4.pipeline.prompting import teacher_prompt_hash, teacher_prompt_version
 from scp_stage4.schema import QeIsolationRequest, QeIsolationResponse, validate_artifact_rows
 
 try:
@@ -1480,6 +1481,7 @@ def _generate_mt_rows(
                     "model": _get_by_dotpath(ctx.cfg, "model", {}),
                     "inference": _get_by_dotpath(ctx.cfg, "inference", {}),
                     "data_length": _get_by_dotpath(ctx.cfg, "data.length", {}),
+                    "prompts": _get_by_dotpath(ctx.cfg, "prompts", {}),
                 },
             }
             for order_idx, row in enumerate(rows)
@@ -1757,6 +1759,9 @@ def run_train_collapse_lora(
                 "model": _get_by_dotpath(ctx.cfg, "model", {}),
                 "base_checkpoint": _latest_checkpoint_ref(ctx),
                 "logging_config": _get_by_dotpath(ctx.cfg, "logging", {}),
+                "runtime_config": {
+                    "prompts": _get_by_dotpath(ctx.cfg, "prompts", {}),
+                },
             }
             for row in q1_rows
         ]
@@ -2058,8 +2063,7 @@ def _prompt_hash(ctx: PipelineContext) -> str:
     prompt_cfg = _get_by_dotpath(ctx.cfg, "prompts", {})
     if not isinstance(prompt_cfg, Mapping):
         prompt_cfg = {}
-    canonical = json.dumps(prompt_cfg, ensure_ascii=False, sort_keys=True)
-    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+    return teacher_prompt_hash(prompt_cfg)
 
 
 def _allowed_api_statuses(ctx: PipelineContext) -> set[str]:
@@ -2263,7 +2267,10 @@ def _build_api_requests(
 ) -> list[dict[str, Any]]:
     provider = str(_get_by_dotpath(ctx.cfg, "external_api.primary.provider", "openai"))
     model = str(_get_by_dotpath(ctx.cfg, "external_api.primary.model", "unknown"))
-    prompt_version = str(_get_by_dotpath(ctx.cfg, "prompts.version", "teacher_correction_v1"))
+    prompt_cfg = _get_by_dotpath(ctx.cfg, "prompts", {})
+    if not isinstance(prompt_cfg, Mapping):
+        prompt_cfg = {}
+    prompt_version = teacher_prompt_version(prompt_cfg)
     prompt_hash = _prompt_hash(ctx)
 
     requests: list[dict[str, Any]] = []
@@ -2540,6 +2547,9 @@ def run_update_base(
                     "model": _get_by_dotpath(ctx.cfg, "model", {}),
                     "base_checkpoint": _latest_checkpoint_ref(ctx),
                     "logging_config": _get_by_dotpath(ctx.cfg, "logging", {}),
+                    "runtime_config": {
+                        "prompts": _get_by_dotpath(ctx.cfg, "prompts", {}),
+                    },
                 }
                 for row in train_rows
             ],
@@ -3021,6 +3031,7 @@ def _generate_ood_mt_rows(
                     "model": _get_by_dotpath(ctx.cfg, "model", {}),
                     "inference": _get_by_dotpath(ctx.cfg, "inference", {}),
                     "data_length": _get_by_dotpath(ctx.cfg, "data.length", {}),
+                    "prompts": _get_by_dotpath(ctx.cfg, "prompts", {}),
                 },
             }
             for order_idx, row in enumerate(rows)

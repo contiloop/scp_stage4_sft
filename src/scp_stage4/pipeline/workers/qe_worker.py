@@ -434,6 +434,38 @@ def _comet_scores(
         return [float(v) for v in values]
 
 
+def _backend_metric_settings(
+    metric_settings: Mapping[str, Any],
+    *,
+    backend: str,
+) -> dict[str, Any]:
+    key_candidates = {
+        "metricx24": ("metricx24",),
+        "metricx24_ref": ("metricx24_ref",),
+        "bleu": ("BLEU", "bleu"),
+        "chrf": ("chrF", "chrf"),
+        "comet_kiwi": ("comet_kiwi", "cometkiwi"),
+        "xcomet": ("xcomet",),
+    }.get(backend, ())
+    for key in key_candidates:
+        scoped = _as_dict(metric_settings.get(key))
+        if scoped:
+            return scoped
+    return {}
+
+
+def _as_positive_int(value: Any, default: int) -> int:
+    if isinstance(value, bool):
+        return default
+    try:
+        parsed = int(value)
+    except Exception:
+        return default
+    if parsed <= 0:
+        return default
+    return parsed
+
+
 def _score_rows(rows: list[dict[str, Any]]) -> tuple[list[float], str]:
     runtime_cfg = _as_dict(rows[0].get("runtime_config"))
     qe_primary = _as_dict(runtime_cfg.get("qe_primary"))
@@ -441,14 +473,23 @@ def _score_rows(rows: list[dict[str, Any]]) -> tuple[list[float], str]:
 
     backend_raw = str(rows[0].get("backend", qe_primary.get("backend", "heuristic")))
     backend = backend_raw.strip().lower()
+    backend_settings = _backend_metric_settings(metric_settings, backend=backend)
     model_name = str(qe_primary.get("model_name", "")).strip()
     tokenizer_name = str(qe_primary.get("tokenizer_name", "")).strip()
-    batch_size = int(qe_primary.get("batch_size", 8) or 8)
-    max_input_length = int(qe_primary.get("max_input_length", 1536) or 1536)
-    if batch_size <= 0:
-        batch_size = 1
-    if max_input_length <= 0:
-        max_input_length = 1536
+    batch_size = _as_positive_int(qe_primary.get("batch_size", 8), 8)
+    max_input_length = _as_positive_int(qe_primary.get("max_input_length", 1536), 1536)
+
+    model_name_override = backend_settings.get("model_name")
+    if isinstance(model_name_override, str) and model_name_override.strip():
+        model_name = model_name_override.strip()
+    tokenizer_name_override = backend_settings.get("tokenizer_name")
+    if isinstance(tokenizer_name_override, str) and tokenizer_name_override.strip():
+        tokenizer_name = tokenizer_name_override.strip()
+    batch_size = _as_positive_int(backend_settings.get("batch_size", batch_size), batch_size)
+    max_input_length = _as_positive_int(
+        backend_settings.get("max_input_length", max_input_length),
+        max_input_length,
+    )
 
     if backend == "metricx24":
         if not model_name:
@@ -487,12 +528,10 @@ def _score_rows(rows: list[dict[str, Any]]) -> tuple[list[float], str]:
         )
 
     if backend == "bleu":
-        bleu_settings = _as_dict(metric_settings.get("BLEU")) if metric_settings else {}
-        return (_bleu_scores(rows, metric_settings=bleu_settings), "sacrebleu/BLEU")
+        return (_bleu_scores(rows, metric_settings=backend_settings), "sacrebleu/BLEU")
 
     if backend == "chrf":
-        chrf_settings = _as_dict(metric_settings.get("chrF")) if metric_settings else {}
-        return (_chrf_scores(rows, metric_settings=chrf_settings), "sacrebleu/chrF")
+        return (_chrf_scores(rows, metric_settings=backend_settings), "sacrebleu/chrF")
 
     if backend == "comet_kiwi":
         if not model_name:

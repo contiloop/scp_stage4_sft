@@ -13,7 +13,7 @@
     "epsilon": 1e-06,
     "primary": {
       "backend": "comet_kiwi",
-      "model_name": "Unbabel/wmt23-cometkiwi-da-xl",
+      "model_name": "Unbabel/wmt22-cometkiwi-da",
       "tokenizer_name": null,
       "batch_size": 64,
       "max_input_length": 1536,

@@ -5,7 +5,7 @@
       "subprocess": {
         "collapse_command": [
           "torchrun",
-          "--nproc_per_node=8",
+          "--nproc_per_node=2",
           "-m",
           "scp_stage4.pipeline.workers.training_worker"
         ],
@@ -17,7 +17,7 @@
         ],
         "update_command": [
           "torchrun",
-          "--nproc_per_node=8",
+          "--nproc_per_node=2",
           "-m",
           "scp_stage4.pipeline.workers.training_worker"
         ]

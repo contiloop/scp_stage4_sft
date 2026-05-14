@@ -191,6 +191,28 @@ make run-subset-real-from-prepared RUN_ID=real_subset_001
 make run-stage-real-from-prepared RUN_ID=real_stage_001
 ```
 
+To validate the first full-size subset, save its model update, run OOD eval, and
+then continue automatically from the next subset, keep the same `RUN_ID`:
+
+```sh
+PYTHONPATH=src python3 -m scp_stage4.pipeline.step_subset run-subset \
+  --config configs/scp_stage4_real.yaml \
+  --run-id real_full_run_001 \
+  --subset-idx 0 \
+  --use-prepared-data \
+  --use-full-train-data
+
+PYTHONPATH=src python3 -m scp_stage4.pipeline.step_subset run-stage \
+  --config configs/scp_stage4_real.yaml \
+  --run-id real_full_run_001 \
+  --subset-idx 1 \
+  --use-full-train-data
+```
+
+`run-subset` executes `eval-ood` automatically when
+`pipeline.eval_after_subset.enabled=true`; `run-stage` starts from the provided
+subset index and uses `checkpoints/latest.json` from the previous subset update.
+
 Check source mix ratio anytime:
 
 ```sh

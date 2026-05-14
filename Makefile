@@ -394,7 +394,6 @@ run-stage-real: prepare-data
 # exit behavior: 0 on successful subset completion; non-zero with structured failure logs
 run-subset-real-from-prepared:
 	@PYTHONPATH=$(PYTHONPATH) $(PY) -m scp_stage4.pipeline.step_subset run-subset --config configs/scp_stage4_real.yaml --run-id $(RUN_ID) --subset-idx 0 --use-prepared-data $(OVERRIDES)
-	@PYTHONPATH=$(PYTHONPATH) $(PY) -m scp_stage4.pipeline.step_subset eval-ood  --config configs/scp_stage4_real.yaml --run-id $(RUN_ID) --subset-idx 0 $(OVERRIDES)
 
 # Target: run-stage-real-from-prepared
 # required config keys: same as run-stage-real

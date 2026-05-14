@@ -62,7 +62,10 @@ def test_run_subset_writes_stepwise_artifact_chain() -> None:
             _run_root(run_id) / "metrics.jsonl",
             _run_root(run_id) / "failures.jsonl",
             _run_root(run_id) / "preference_pairs.jsonl",
+            _run_root(run_id) / "ood_eval.jsonl",
             _run_root(run_id) / "run_subset_summary.json",
+            _run_root(run_id) / "eval" / "ood_test" / "subset_000.rows.jsonl",
+            _run_root(run_id) / "eval" / "ood_test" / "subset_000.summary.json",
             subset_root / "input.jsonl",
             subset_root / "q1.jsonl",
             subset_root / "collapse_adapter" / "collapse_state.json",
@@ -109,6 +112,7 @@ def test_run_subset_writes_stepwise_artifact_chain() -> None:
         assert summary["counts"]["q2"] == len(q2_rows)
         assert summary["counts"]["selected"] == len(selected_rows)
         assert summary["preference_pairs_run_total"] == len(run_preference_rows)
+        assert "ood_eval" in summary
     finally:
         _cleanup(run_id)
 

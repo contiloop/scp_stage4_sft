@@ -2752,6 +2752,7 @@ def run_subset(
     use_sampled_data: bool = True,
     stage_completed: bool = True,
     start_from_phase: str | None = None,
+    run_eval_after_subset: bool = True,
 ) -> dict[str, Any]:
     start_from_phase = _validate_start_from_phase(start_from_phase)
     if start_from_phase is not None:
@@ -2874,6 +2875,24 @@ def run_subset(
     }
     if start_from_phase is None:
         summary.pop("resumed_from")
+
+    eval_cfg = _get_by_dotpath(ctx.cfg, "pipeline.eval_after_subset", {})
+    if (
+        run_eval_after_subset
+        and isinstance(eval_cfg, Mapping)
+        and bool(eval_cfg.get("enabled", False))
+    ):
+        eval_summary = run_eval_ood(
+            config_path=config_path,
+            overrides=overrides,
+            run_id_override=run_id_override,
+            subset_idx=subset_idx,
+        )
+        summary["ood_eval"] = {
+            "rows": int(eval_summary["rows"]),
+            "summary_path": str(eval_summary["summary_path"]),
+            "rows_path": str(eval_summary["rows_path"]),
+        }
 
     archive = _archive_subset_if_configured(
         ctx=ctx,
@@ -3542,6 +3561,7 @@ def run_stage(
                 use_sampled_data=use_sampled_data,
                 stage_completed=False,
                 start_from_phase=phase_resume,
+                run_eval_after_subset=False,
             )
             should_run_eval = False
             if eval_enabled:

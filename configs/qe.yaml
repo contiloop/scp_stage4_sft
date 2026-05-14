@@ -15,7 +15,7 @@
       "backend": "comet_kiwi",
       "model_name": "Unbabel/wmt22-cometkiwi-da",
       "tokenizer_name": null,
-      "batch_size": 64,
+      "batch_size": 128,
       "max_input_length": 1536,
       "score_direction": "higher_is_better",
       "transform": {

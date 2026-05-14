@@ -3,6 +3,7 @@ from __future__ import annotations
 from scp_stage4.pipeline.workers.common import WorkerContractError
 from scp_stage4.pipeline.workers.training_worker import (
     _filter_training_text_indices_by_length,
+    _resolve_attention_impl,
     _resolve_response_template,
     _resolve_train_runtime,
 )
@@ -31,6 +32,48 @@ def test_resolve_train_runtime_respects_explicit_load_in_4bit_true() -> None:
         }
     )
     assert runtime.load_in_4bit is True
+
+
+def test_resolve_train_runtime_reads_attention_impl(monkeypatch) -> None:
+    monkeypatch.delenv("ATTN_IMPLEMENTATION", raising=False)
+    runtime = _resolve_train_runtime(
+        {
+            "model": {
+                "name": "alwaysgood/qwen35-it",
+                "max_length": 8192,
+                "attention_impl": "flash_attention_2",
+            }
+        }
+    )
+    assert runtime.attention_impl == "flash_attention_2"
+    assert _resolve_attention_impl(runtime) == "flash_attention_2"
+
+
+def test_resolve_attention_impl_env_overrides_config(monkeypatch) -> None:
+    runtime = _resolve_train_runtime(
+        {
+            "model": {
+                "name": "alwaysgood/qwen35-it",
+                "max_length": 8192,
+                "attention_impl": "flash_attention_2",
+            }
+        }
+    )
+    monkeypatch.setenv("ATTN_IMPLEMENTATION", "sdpa")
+    assert _resolve_attention_impl(runtime) == "sdpa"
+
+
+def test_resolve_attention_impl_defaults_to_sdpa(monkeypatch) -> None:
+    runtime = _resolve_train_runtime(
+        {
+            "model": {
+                "name": "alwaysgood/qwen35-it",
+                "max_length": 8192,
+            }
+        }
+    )
+    monkeypatch.delenv("ATTN_IMPLEMENTATION", raising=False)
+    assert _resolve_attention_impl(runtime) == "sdpa"
 
 
 def test_resolve_response_template_from_batching() -> None:

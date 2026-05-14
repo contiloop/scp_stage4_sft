@@ -50,6 +50,7 @@ class _TrainRuntime:
     max_seq_length: int
     load_in_4bit: bool
     dtype: Any
+    attention_impl: str | None
     trust_remote_code: bool
 
 
@@ -204,8 +205,28 @@ def _resolve_train_runtime(row: Mapping[str, Any]) -> _TrainRuntime:
         max_seq_length=int(max_seq_length),
         load_in_4bit=bool(model_cfg.get("load_in_4bit", False)),
         dtype=_dtype_from_config(model_cfg.get("dtype")),
+        attention_impl=_resolve_attention_impl_from_config(model_cfg),
         trust_remote_code=bool(model_cfg.get("trust_remote_code", False)),
     )
+
+
+def _resolve_attention_impl_from_config(model_cfg: Mapping[str, Any]) -> str | None:
+    raw = model_cfg.get("attention_impl")
+    if raw is None:
+        return None
+    value = str(raw).strip()
+    return value or None
+
+
+def _resolve_attention_impl(runtime: _TrainRuntime) -> str:
+    env_value = os.environ.get("ATTN_IMPLEMENTATION")
+    if env_value is not None:
+        env_value = env_value.strip()
+        if env_value:
+            return env_value
+    if runtime.attention_impl:
+        return runtime.attention_impl
+    return "sdpa"
 
 
 def _format_sft_text(
@@ -438,7 +459,7 @@ def _load_unsloth_model(runtime: _TrainRuntime) -> tuple[Any, Any]:
     if runtime.trust_remote_code:
         kwargs["trust_remote_code"] = True
 
-    attn_impl = os.environ.get("ATTN_IMPLEMENTATION", "sdpa").strip()
+    attn_impl = _resolve_attention_impl(runtime)
     if attn_impl:
         kwargs["attn_implementation"] = attn_impl
 

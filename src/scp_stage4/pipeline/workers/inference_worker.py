@@ -19,6 +19,7 @@ from scp_stage4.data import read_jsonl, write_jsonl
 from scp_stage4.pipeline.prompting import (
     PromptConfigError,
     render_translation_prompt,
+    sft_response_template,
 )
 from scp_stage4.pipeline.workers.common import (
     WorkerContractError,
@@ -161,7 +162,11 @@ def _build_prompt(source: str, request: Mapping[str, Any] | None = None) -> str:
         )
     except PromptConfigError as exc:
         raise WorkerContractError(str(exc)) from exc
-    return prompt
+    # Mirror the training format: append the SFT response marker so the model
+    # sees the same "### Response:\n" trigger it learned to continue after.
+    # Otherwise sampling can emit EOS as the first generated token.
+    response_template = sft_response_template(prompts_cfg)
+    return f"{prompt}\n{response_template}"
 
 
 def _resolve_unsloth_runtime(request: Mapping[str, Any]) -> _UnslothRuntime:

@@ -50,6 +50,47 @@ pip check
 python -c "from huggingface_hub import login; login()"
 wandb login
 export OPENAI_API_KEY="..."
+export ANTHROPIC_API_KEY="..."
+export GEMINI_API_KEY="..."
+```
+
+When pasting API keys into a remote shell, make sure hidden line separators
+were not copied into the environment value. In particular, `U+2028 LINE
+SEPARATOR` can look like a normal newline but remain inside the key string,
+causing HTTP header encoding failures such as
+`'ascii' codec can't encode character '\u2028'`.
+
+Check key presence and hidden characters without printing the secrets:
+
+```sh
+python3 - <<'PY'
+import os
+import unicodedata
+
+for name in ["OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GEMINI_API_KEY"]:
+    value = os.getenv(name) or ""
+    bad = [
+        (idx, hex(ord(ch)), unicodedata.name(ch, "?"))
+        for idx, ch in enumerate(value)
+        if ord(ch) > 127 or ch in "\r\n\t\u2028\u2029 "
+    ]
+    print(name, "set=", bool(value), "len=", len(value), "bad=", bad[:5])
+PY
+```
+
+If `bad` is non-empty, re-export a cleaned value before running real API
+steps. For example:
+
+```sh
+export ANTHROPIC_API_KEY="$(python3 - <<'PY'
+import os
+
+key = os.environ["ANTHROPIC_API_KEY"]
+for ch in ["\u2028", "\u2029", "\n", "\r", "\t", " "]:
+    key = key.replace(ch, "")
+print(key, end="")
+PY
+)"
 ```
 
 If you use QE subprocess isolation, also set:

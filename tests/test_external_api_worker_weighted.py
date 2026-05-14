@@ -250,6 +250,7 @@ def test_worker_records_failure_on_exception(
     assert len(responses) == 1
     response = responses[0]
     assert response["status"] == "failed"
+    assert response["teacher_label"] == "runtime_error"
     assert "simulated failure" in (response["error"] or "")
     # split_name still echoed back on failure.
     assert response["split_name"] == "gemini-flash-lite-off"

@@ -556,7 +556,7 @@ def _fallback_error_response(row: Mapping[str, Any], message: str) -> dict[str, 
         "request_id": str(row.get("request_id", "")),
         "status": "failed",
         "gold": None,
-        "teacher_label": "invalid",
+        "teacher_label": "runtime_error",
         "thinking_text": "",
         "split_name": split_name,
         "usage": {

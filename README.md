@@ -151,7 +151,7 @@ Optional compatibility artifacts during migration:
 
 ```sh
 DATASET_REPO="alwaysgood/scp-stage4-dataset-trainable"
-BUNDLE_TAG="prepared-2026-05-11"
+BUNDLE_TAG="prepared-2026-05-14"
 DATASET_PATH="prepared/${BUNDLE_TAG}"
 
 make pack-prepared-data \
@@ -173,7 +173,7 @@ If you intentionally reuse an existing tag name, add `HF_DATASET_TAG_EXIST_OK=1`
 
 ```sh
 DATASET_REPO="alwaysgood/scp-stage4-dataset-trainable"
-BUNDLE_TAG="prepared-2026-05-11"
+BUNDLE_TAG="prepared-2026-05-14"
 DATASET_PATH="prepared/${BUNDLE_TAG}"
 
 make download-prepared-data \

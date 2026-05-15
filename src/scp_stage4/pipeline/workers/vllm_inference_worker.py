@@ -366,6 +366,7 @@ def main(argv: list[str] | None = None) -> int:
         write_jsonl(args.output_path, [], ensure_ascii=False)
         return 0
 
+    llm = None
     try:
         llm, base_lora_request, collapse_lora_request = _load_engine(requests)
         responses = _generate_all(
@@ -386,10 +387,63 @@ def main(argv: list[str] | None = None) -> int:
             }
             for idx, row in enumerate(requests)
         ]
+    finally:
+        _shutdown_engine(llm)
 
     validate_phase_response_rows(responses, schema=schema, context="inference")
     write_jsonl(args.output_path, responses, ensure_ascii=False)
     return 0
+
+
+def _shutdown_engine(llm: Any) -> None:
+    """Release GPU memory before the worker exits.
+
+    vLLM spawns EngineCore subprocesses that keep their CUDA context (and
+    ~75GB of weights/KV cache) resident if the worker just exits. Explicitly
+    tear the engine down, drop references, empty the allocator cache and
+    destroy any process group so the next phase's workers can claim the GPUs.
+    """
+    if llm is not None:
+        try:
+            engine = getattr(llm, "llm_engine", None)
+            for obj in (engine, llm):
+                for meth in ("shutdown", "stop_remote_worker_execution_loop"):
+                    fn = getattr(obj, meth, None)
+                    if callable(fn):
+                        try:
+                            fn()
+                        except Exception:
+                            pass
+        except Exception:
+            pass
+        try:
+            del llm
+        except Exception:
+            pass
+
+    try:
+        import gc
+
+        gc.collect()
+    except Exception:
+        pass
+
+    try:
+        import torch
+
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            torch.cuda.synchronize()
+    except Exception:
+        pass
+
+    try:
+        import torch.distributed as dist
+
+        if dist.is_available() and dist.is_initialized():
+            dist.destroy_process_group()
+    except Exception:
+        pass
 
 
 if __name__ == "__main__":

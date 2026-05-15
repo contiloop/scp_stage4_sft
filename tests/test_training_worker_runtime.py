@@ -1,8 +1,15 @@
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
+import pytest
+
 from scp_stage4.pipeline.workers.common import WorkerContractError
 from scp_stage4.pipeline.workers.training_worker import (
     _filter_training_text_indices_by_length,
+    _assert_full_weight_checkpoint_keys,
+    _normalize_full_weight_checkpoint_keys,
     _resolve_attention_impl,
     _resolve_response_template,
     _resolve_train_runtime,
@@ -136,3 +143,56 @@ def test_filter_training_text_indices_by_length_filters_overflow() -> None:
     )
     assert keep_indices == [0]
     assert over_limit == [("row_over", 64)]
+
+
+def test_normalize_full_weight_checkpoint_keys_rewrites_unsloth_nested_prefix(
+    tmp_path: Path,
+) -> None:
+    torch = pytest.importorskip("torch")
+    safe_open = pytest.importorskip("safetensors").safe_open
+    save_file = pytest.importorskip("safetensors.torch").save_file
+    checkpoint_dir = tmp_path / "full_weight_model"
+    checkpoint_dir.mkdir()
+    shard_name = "model-00001-of-00001.safetensors"
+    nested_key = "model.language_model.language_model.language_model.layers.0.mlp.gate_proj.weight"
+    base_key = "model.language_model.layers.0.mlp.gate_proj.weight"
+    save_file(
+        {nested_key: torch.ones((2, 2), dtype=torch.float32)},
+        str(checkpoint_dir / shard_name),
+        metadata={"format": "pt"},
+    )
+    (checkpoint_dir / "model.safetensors.index.json").write_text(
+        json.dumps({"metadata": {}, "weight_map": {nested_key: shard_name}}),
+        encoding="utf-8",
+    )
+
+    assert _normalize_full_weight_checkpoint_keys(checkpoint_dir) is True
+    _assert_full_weight_checkpoint_keys(checkpoint_dir)
+
+    with safe_open(checkpoint_dir / shard_name, framework="pt") as handle:
+        keys = set(handle.keys())
+    assert base_key in keys
+    assert nested_key not in keys
+    index_payload = json.loads((checkpoint_dir / "model.safetensors.index.json").read_text())
+    assert index_payload["weight_map"] == {base_key: shard_name}
+
+
+def test_normalize_full_weight_checkpoint_keys_rejects_mixed_prefixes(
+    tmp_path: Path,
+) -> None:
+    torch = pytest.importorskip("torch")
+    save_file = pytest.importorskip("safetensors.torch").save_file
+    checkpoint_dir = tmp_path / "full_weight_model"
+    checkpoint_dir.mkdir()
+    nested_key = "model.language_model.language_model.language_model.layers.0.mlp.gate_proj.weight"
+    base_key = "model.language_model.layers.1.mlp.gate_proj.weight"
+    save_file(
+        {
+            nested_key: torch.ones((1,), dtype=torch.float32),
+            base_key: torch.zeros((1,), dtype=torch.float32),
+        },
+        str(checkpoint_dir / "model.safetensors"),
+    )
+
+    with pytest.raises(WorkerContractError, match="both nested and base-style"):
+        _normalize_full_weight_checkpoint_keys(checkpoint_dir)

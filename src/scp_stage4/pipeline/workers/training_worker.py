@@ -884,6 +884,8 @@ _VISION_PARAM_HINTS = (
     "patch_embed",
     "vit",
 )
+_QWEN35_NESTED_LANGUAGE_PREFIX = "model.language_model.language_model.language_model."
+_QWEN35_BASE_LANGUAGE_PREFIX = "model.language_model."
 
 
 def _prepare_full_weight_model(model: Any) -> Any:
@@ -901,6 +903,117 @@ def _prepare_full_weight_model(model: Any) -> Any:
         else:
             param.requires_grad = True
     return model
+
+
+def _normalize_full_weight_checkpoint_keys(checkpoint_dir: Path) -> bool:
+    """Fix Unsloth wrapper key nesting after full-weight Qwen3.5 saves.
+
+    FastVisionModel/FastLanguageModel can leave a text model wrapped under
+    repeated ``language_model`` modules. Saving that wrapper emits keys like
+    ``model.language_model.language_model.language_model.layers...`` while the
+    base checkpoint and downstream vLLM loader expect
+    ``model.language_model.layers...``. Rewrite only this exact all-nested
+    pattern so other model layouts stay untouched.
+    """
+
+    safetensor_paths = sorted(checkpoint_dir.glob("*.safetensors"))
+    if not safetensor_paths:
+        return False
+
+    try:
+        from safetensors import safe_open
+        from safetensors.torch import save_file
+    except ModuleNotFoundError as exc:
+        raise WorkerContractError("safetensors package is required to normalize checkpoint keys") from exc
+
+    saw_nested = False
+    saw_base_style = False
+    for path in safetensor_paths:
+        with safe_open(path, framework="pt") as handle:
+            for key in handle.keys():
+                if key.startswith(_QWEN35_NESTED_LANGUAGE_PREFIX):
+                    saw_nested = True
+                elif key.startswith(_QWEN35_BASE_LANGUAGE_PREFIX):
+                    saw_base_style = True
+
+    if not saw_nested:
+        return False
+    if saw_base_style:
+        raise WorkerContractError(
+            "full-weight checkpoint contains both nested and base-style language keys; "
+            "refusing ambiguous key normalization"
+        )
+
+    for path in safetensor_paths:
+        tensors: dict[str, Any] = {}
+        metadata: dict[str, str] | None = None
+        with safe_open(path, framework="pt") as handle:
+            raw_metadata = handle.metadata()
+            if raw_metadata:
+                metadata = {str(key): str(value) for key, value in raw_metadata.items()}
+            for key in handle.keys():
+                normalized_key = key
+                if key.startswith(_QWEN35_NESTED_LANGUAGE_PREFIX):
+                    normalized_key = _QWEN35_BASE_LANGUAGE_PREFIX + key[len(_QWEN35_NESTED_LANGUAGE_PREFIX) :]
+                if normalized_key in tensors:
+                    raise WorkerContractError(
+                        f"duplicate checkpoint key after normalization: {normalized_key}"
+                    )
+                tensors[normalized_key] = handle.get_tensor(key)
+        save_file(tensors, str(path), metadata=metadata)
+
+    for index_path in checkpoint_dir.glob("*.safetensors.index.json"):
+        payload = json.loads(index_path.read_text(encoding="utf-8"))
+        weight_map = payload.get("weight_map")
+        if isinstance(weight_map, dict):
+            normalized_map: dict[str, Any] = {}
+            for key, value in weight_map.items():
+                normalized_key = str(key)
+                if normalized_key.startswith(_QWEN35_NESTED_LANGUAGE_PREFIX):
+                    normalized_key = (
+                        _QWEN35_BASE_LANGUAGE_PREFIX
+                        + normalized_key[len(_QWEN35_NESTED_LANGUAGE_PREFIX) :]
+                    )
+                if normalized_key in normalized_map:
+                    raise WorkerContractError(
+                        f"duplicate index key after normalization: {normalized_key}"
+                    )
+                normalized_map[normalized_key] = value
+            payload["weight_map"] = normalized_map
+            index_path.write_text(
+                json.dumps(payload, ensure_ascii=False, sort_keys=True, indent=2) + "\n",
+                encoding="utf-8",
+            )
+
+    return True
+
+
+def _assert_full_weight_checkpoint_keys(checkpoint_dir: Path) -> None:
+    safetensor_paths = sorted(checkpoint_dir.glob("*.safetensors"))
+    if not safetensor_paths:
+        raise WorkerContractError(f"full-weight checkpoint has no safetensors: {checkpoint_dir}")
+    try:
+        from safetensors import safe_open
+    except ModuleNotFoundError as exc:
+        raise WorkerContractError("safetensors package is required to validate checkpoint keys") from exc
+
+    saw_base_style = False
+    saw_nested = False
+    for path in safetensor_paths:
+        with safe_open(path, framework="pt") as handle:
+            for key in handle.keys():
+                if key.startswith(_QWEN35_BASE_LANGUAGE_PREFIX):
+                    saw_base_style = True
+                if key.startswith(_QWEN35_NESTED_LANGUAGE_PREFIX):
+                    saw_nested = True
+    if saw_nested:
+        raise WorkerContractError(
+            "full-weight checkpoint still contains nested language_model keys after save"
+        )
+    if not saw_base_style:
+        raise WorkerContractError(
+            "full-weight checkpoint missing base-style model.language_model.* keys"
+        )
 
 
 def _run_sft_train(
@@ -959,6 +1072,8 @@ def _run_sft_train(
             save_model = _unwrap_model(model)
             checkpoint_dir.mkdir(parents=True, exist_ok=True)
             save_model.save_pretrained(str(checkpoint_dir))
+            _normalize_full_weight_checkpoint_keys(checkpoint_dir)
+            _assert_full_weight_checkpoint_keys(checkpoint_dir)
             tokenizer.save_pretrained(str(checkpoint_dir))
         return checkpoint_dir, None
     else:

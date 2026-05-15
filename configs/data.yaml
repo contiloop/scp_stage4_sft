@@ -56,9 +56,9 @@
     "length": {
       "enabled": true,
       "mode": "tokenizer",
-      "max_total_tokens": 8192,
-      "max_source_tokens": 3900,
-      "max_output_tokens": 4096,
+      "max_total_tokens": 4096,
+      "max_source_tokens": 1700,
+      "max_output_tokens": 2048,
       "prompt_template_tokens": 256,
       "min_available_output_tokens": 768,
       "safety_margin_tokens": 64,
@@ -70,11 +70,11 @@
       "tokenizer_batch_size": 16384,
       "split": {
         "unit": "sentence",
-        "max_source_tokens_per_chunk": 3900,
-        "max_chunks_per_row": 4,
+        "max_source_tokens_per_chunk": 1700,
+        "max_chunks_per_row": 1024,
         "min_chunk_tokens": 32,
         "fallback_for_long_sentence": "skip",
-        "on_max_chunks_exceeded": "skip"
+        "on_max_chunks_exceeded": "keep_first"
       }
     },
     "ood_test": {

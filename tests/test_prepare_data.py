@@ -132,6 +132,31 @@ def test_split_long_source_uses_batched_sentence_counts() -> None:
     assert exact_calls["count"] <= len(chunks) + 1
 
 
+def test_split_long_source_keeps_first_chunks_when_cap_exceeded() -> None:
+    row = {
+        "id": "row-cap",
+        "source": "One. Two. Three. Four. Five.",
+        "metadata": {"parent_id": None, "chunk_idx": None},
+    }
+
+    chunks = prepare_data_module._split_long_source(
+        row,
+        token_count=lambda text: len(text.split()),
+        token_count_batch=lambda texts: [len(text.split()) for text in texts],
+        max_tokens_per_chunk=1,
+        max_chunks=3,
+        fallback_for_long_sentence="split",
+        on_max_chunks_exceeded="keep_first",
+    )
+
+    assert [chunk["id"] for chunk in chunks] == [
+        "row-cap__chunk_0",
+        "row-cap__chunk_1",
+        "row-cap__chunk_2",
+    ]
+    assert [chunk["source"] for chunk in chunks] == ["One.", "Two.", "Three."]
+
+
 def test_prepare_data_local_jsonl_runtime_uses_configured_source(tmp_path: Path) -> None:
     workdir = tmp_path / "work_local_jsonl"
     workdir.mkdir(parents=True, exist_ok=True)
@@ -330,6 +355,50 @@ def test_prepare_data_summary_includes_length_policy_skip_counts(tmp_path: Path)
         os.chdir(old_cwd)
 
 
+def test_prepare_data_length_policy_uses_source_limit_only(tmp_path: Path) -> None:
+    workdir = tmp_path / "work_source_only_length"
+    workdir.mkdir(parents=True, exist_ok=True)
+    raw_path = workdir / "raw.jsonl"
+    raw_path.write_text(
+        json.dumps(
+            {"id": "row-keep", "source_text": "one two three four five"},
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    old_cwd = Path.cwd()
+    try:
+        os.chdir(workdir)
+        summary = run_prepare_data(
+            config_path=str(ROOT / "configs" / "scp_stage4.yaml"),
+            overrides=[
+                "data.runtime.mode=local_jsonl",
+                f"data.runtime.local_jsonl_path={raw_path}",
+                "data.split.eval_ratio=0",
+                "data.subset_size=1",
+                "data.length.max_source_tokens=8",
+                "data.length.max_total_tokens=10",
+                "data.length.prompt_template_tokens=4",
+                "data.length.min_available_output_tokens=4",
+                "data.length.safety_margin_tokens=0",
+                "data.length.overflow=split",
+                "data.length.split.max_source_tokens_per_chunk=8",
+                "data.length.split.min_chunk_tokens=1",
+                "data.length.mode=whitespace",
+            ],
+        )
+        length_policy = summary["length_policy"]
+        assert length_policy["input_rows"] == 1
+        assert length_policy["output_rows"] == 1
+        assert length_policy["split_input_rows"] == 0
+        assert length_policy["skipped_total"] == 0
+    finally:
+        os.chdir(old_cwd)
+
+
 def test_prepare_data_hf_runtime_falls_back_to_snapshot_jsonl(tmp_path: Path, monkeypatch) -> None:
     workdir = tmp_path / "work_hf_fallback"
     workdir.mkdir(parents=True, exist_ok=True)
@@ -378,6 +447,7 @@ def test_prepare_data_hf_runtime_falls_back_to_snapshot_jsonl(tmp_path: Path, mo
                 "data.datasets=[{\"name\":\"alwaysgood/reuter_processed\",\"split\":\"train\"}]",
                 "data.split.eval_ratio=0",
                 "data.subset_size=2",
+                "data.length.tokenizer_fallback=whitespace",
             ],
         )
         rows = read_jsonl(workdir / "artifacts" / "data" / "datapool.normalized.jsonl")

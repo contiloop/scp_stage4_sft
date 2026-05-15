@@ -496,19 +496,24 @@ def _load_hf_rows_via_snapshot_jsonl(
         )
     )
 
-    jsonl_paths = sorted(snapshot_path.rglob("*.jsonl"))
-    jsonl_paths += sorted(snapshot_path.rglob("*.jsonl.gz"))
-    jsonl_paths += sorted(snapshot_path.rglob("*.ndjson"))
-    jsonl_paths += sorted(snapshot_path.rglob("*.ndjson.gz"))
-    if not jsonl_paths:
+    data_paths = sorted(snapshot_path.rglob("*.parquet"))
+    data_paths += sorted(snapshot_path.rglob("*.jsonl"))
+    data_paths += sorted(snapshot_path.rglob("*.jsonl.gz"))
+    data_paths += sorted(snapshot_path.rglob("*.ndjson"))
+    data_paths += sorted(snapshot_path.rglob("*.ndjson.gz"))
+    if not data_paths:
         raise PrepareDataError(
-            f"HF JSONL fallback found no JSONL files in snapshot: {snapshot_path}"
+            f"HF snapshot fallback found no parquet/JSONL files in snapshot: {snapshot_path}"
         )
 
     row_index = 0
     emitted = False
-    for path in jsonl_paths:
-        for raw_row in _iter_jsonl_mapping_rows(path):
+    for path in data_paths:
+        if path.suffix == ".parquet":
+            row_iter = _iter_parquet_mapping_rows(path)
+        else:
+            row_iter = _iter_jsonl_mapping_rows(path)
+        for raw_row in row_iter:
             if max_rows_per_dataset is not None and row_index >= max_rows_per_dataset:
                 break
             emitted = True
@@ -949,9 +954,12 @@ def _split_long_source(
     if len(chunks) > max_chunks:
         if on_max_chunks_exceeded == "error":
             raise PrepareDataError(f"row {row['id']} exceeded max_chunks_per_row={max_chunks}")
-        if stats is not None:
-            stats.skipped_max_chunks_exceeded += 1
-        return []
+        if on_max_chunks_exceeded == "keep_first":
+            chunks = chunks[:max_chunks]
+        else:
+            if stats is not None:
+                stats.skipped_max_chunks_exceeded += 1
+            return []
 
     out_rows: list[dict[str, Any]] = []
     for chunk_idx, chunk in enumerate(chunks):
@@ -966,7 +974,7 @@ def _split_long_source(
     return out_rows
 
 
-def _resolved_runtime_token_limits(cfg: Mapping[str, Any]) -> tuple[int, int]:
+def _resolved_source_token_limit(cfg: Mapping[str, Any]) -> int:
     data_cfg = cfg.get("data", {})
     if not isinstance(data_cfg, Mapping):
         data_cfg = {}
@@ -974,34 +982,10 @@ def _resolved_runtime_token_limits(cfg: Mapping[str, Any]) -> tuple[int, int]:
     if not isinstance(length_cfg, Mapping):
         length_cfg = {}
 
-    model_cfg = cfg.get("model", {})
-    if not isinstance(model_cfg, Mapping):
-        model_cfg = {}
-
-    model_max_length = int(model_cfg.get("max_length", 0))
-    model_max_seq_length = int(model_cfg.get("max_seq_length", model_max_length))
-    max_total_tokens = int(length_cfg.get("max_total_tokens", model_max_length))
-    runtime_max_total = min(model_max_length, model_max_seq_length, max_total_tokens)
-
-    prompt_template_tokens = int(length_cfg.get("prompt_template_tokens", 0))
-    safety_margin_tokens = int(length_cfg.get("safety_margin_tokens", 0))
-    min_available_output_tokens = int(length_cfg.get("min_available_output_tokens", 0))
     max_source_tokens = int(length_cfg.get("max_source_tokens", 0))
-
-    source_budget_by_context = (
-        runtime_max_total
-        - prompt_template_tokens
-        - safety_margin_tokens
-        - min_available_output_tokens
-    )
-    effective_max_source_tokens = min(max_source_tokens, source_budget_by_context)
-    if effective_max_source_tokens <= 0:
-        raise PrepareDataError(
-            "length policy is unsatisfiable: "
-            "max_total_tokens - prompt_template_tokens - safety_margin_tokens - "
-            "min_available_output_tokens must be > 0"
-        )
-    return runtime_max_total, effective_max_source_tokens
+    if max_source_tokens <= 0:
+        raise PrepareDataError("data.length.max_source_tokens must be > 0")
+    return max_source_tokens
 
 
 def _iter_rows_with_length_policy(
@@ -1018,10 +1002,7 @@ def _iter_rows_with_length_policy(
         yield from rows
         return
 
-    runtime_max_total, effective_max_source_tokens = _resolved_runtime_token_limits(cfg)
-    prompt_template_tokens = int(length_cfg.get("prompt_template_tokens", 0))
-    safety_margin_tokens = int(length_cfg.get("safety_margin_tokens", 0))
-    min_available_output_tokens = int(length_cfg.get("min_available_output_tokens", 0))
+    effective_max_source_tokens = _resolved_source_token_limit(cfg)
     overflow = str(length_cfg.get("overflow", "split"))
     split_cfg = length_cfg.get("split", {})
     if not isinstance(split_cfg, Mapping):
@@ -1056,16 +1037,7 @@ def _iter_rows_with_length_policy(
             if stats is not None:
                 stats.input_rows += 1
             source = str(row["source"])
-            available_output_budget = (
-                runtime_max_total
-                - prompt_template_tokens
-                - source_tokens
-                - safety_margin_tokens
-            )
-            if (
-                source_tokens <= effective_max_source_tokens
-                and available_output_budget >= min_available_output_tokens
-            ):
+            if source_tokens <= effective_max_source_tokens:
                 filtered_rows.append(row)
                 if stats is not None:
                     stats.output_rows += 1
@@ -1082,13 +1054,7 @@ def _iter_rows_with_length_policy(
                 out = dict(row)
                 out["source"] = truncated
                 truncated_tokens = token_counter.count(truncated)
-                available_after_truncation = (
-                    runtime_max_total
-                    - prompt_template_tokens
-                    - truncated_tokens
-                    - safety_margin_tokens
-                )
-                if available_after_truncation >= min_available_output_tokens:
+                if truncated_tokens <= effective_max_source_tokens:
                     filtered_rows.append(out)
                     if stats is not None:
                         stats.output_rows += 1

@@ -28,7 +28,7 @@ _ENV_NAME_RE = re.compile(r"^[A-Z][A-Z0-9_]*$")
 _OVERFLOW_POLICIES = {"split", "skip", "truncate"}
 _SPLIT_UNIT_POLICIES = {"sentence"}
 _SPLIT_LONG_SENTENCE_POLICIES = {"skip", "truncate", "split"}
-_SPLIT_MAX_CHUNKS_EXCEEDED_POLICIES = {"skip", "error"}
+_SPLIT_MAX_CHUNKS_EXCEEDED_POLICIES = {"skip", "error", "keep_first"}
 _SUBSET_ARCHIVE_FORMATS = {"tar", "tar.gz", "tar.xz"}
 _DATA_RUNTIME_MODES = {"fixture", "hf", "local_jsonl"}
 _INFERENCE_RUNTIME_MODES = {"mock", "subprocess"}
@@ -299,14 +299,6 @@ def validate_config(cfg: dict[str, Any]) -> None:
     else:
         prompt_tokens = None
 
-    if None not in {max_source, min_avail, safety, max_total, prompt_tokens}:
-        if (max_source + min_avail + safety + prompt_tokens) > max_total:
-            _err(
-                errors,
-                "data.length.max_source_tokens + min_available_output_tokens + "
-                "prompt_template_tokens + "
-                "safety_margin_tokens must be <= data.length.max_total_tokens",
-            )
     overflow = length_cfg.get("overflow")
     if not isinstance(overflow, str) or overflow not in _OVERFLOW_POLICIES:
         _err(

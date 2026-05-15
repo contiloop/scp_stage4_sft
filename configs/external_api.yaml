@@ -43,11 +43,11 @@
       ]
     },
     "concurrency": {
-      "max_workers": 12,
+      "max_workers": 18,
       "per_provider": {
         "openai": 4,
         "anthropic": 4,
-        "gemini": 6
+        "gemini": 12
       },
       "min_request_interval_sec": 0.0
     },

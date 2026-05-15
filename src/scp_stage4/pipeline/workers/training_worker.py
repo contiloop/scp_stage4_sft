@@ -440,11 +440,15 @@ def _load_hf_model(runtime: _TrainRuntime) -> tuple[Any, Any]:
     return model, tokenizer
 
 
-def _load_unsloth_model(runtime: _TrainRuntime) -> tuple[Any, Any]:
+def _load_unsloth_model(
+    runtime: _TrainRuntime, *, full_finetuning: bool = False
+) -> tuple[Any, Any]:
     if not _use_unsloth():
         return _load_hf_model(runtime)
 
     try:
+        import inspect
+
         from unsloth import FastLanguageModel, FastVisionModel
     except ModuleNotFoundError as exc:
         raise WorkerContractError("unsloth package is required for training runtime") from exc
@@ -467,6 +471,16 @@ def _load_unsloth_model(runtime: _TrainRuntime) -> tuple[Any, Any]:
     load_errors: list[str] = []
     for candidate_cls in (FastVisionModel, FastLanguageModel):
         attempt_kwargs = dict(kwargs)
+        # Tell Unsloth to keep the full model trainable. Without this Unsloth
+        # silently switches to "16bit LoRA" mode, so for mode=full_weight the
+        # base weights never receive gradients and the saved full_weight_model
+        # is identical to the original base checkpoint.
+        if (
+            full_finetuning
+            and "full_finetuning"
+            in inspect.signature(candidate_cls.from_pretrained).parameters
+        ):
+            attempt_kwargs["full_finetuning"] = True
         try:
             model, tokenizer = candidate_cls.from_pretrained(**attempt_kwargs)
             break
@@ -910,7 +924,9 @@ def _run_sft_train(
     response_template = _resolve_response_template(
         train_cfg_with_prompts, phase=phase or "training"
     )
-    model, tokenizer = _load_unsloth_model(runtime)
+    model, tokenizer = _load_unsloth_model(
+        runtime, full_finetuning=(mode == "full_weight")
+    )
     if mode == "full_weight":
         model = _prepare_full_weight_model(model)
     else:

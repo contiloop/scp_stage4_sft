@@ -118,7 +118,12 @@ def _dataset_file_stats(path: Path) -> tuple[str, int | None, str | None]:
     return fmt, row_count, digest.hexdigest()
 
 
-def _copy_required_artifacts(*, source_dir: Path, target_dir: Path) -> list[str]:
+def _copy_required_artifacts(
+    *,
+    source_dir: Path,
+    target_dir: Path,
+    include_optional: bool = True,
+) -> list[str]:
     copied: list[str] = []
     missing: list[str] = []
 
@@ -135,12 +140,13 @@ def _copy_required_artifacts(*, source_dir: Path, target_dir: Path) -> list[str]
             "Missing required prepared-data artifacts: " + ", ".join(sorted(missing))
         )
 
-    for name in _OPTIONAL_PACK_FILES:
-        source_path = source_dir / name
-        if not source_path.exists():
-            continue
-        _materialize_bundle_file(source_path, target_dir / name)
-        copied.append(name)
+    if include_optional:
+        for name in _OPTIONAL_PACK_FILES:
+            source_path = source_dir / name
+            if not source_path.exists():
+                continue
+            _materialize_bundle_file(source_path, target_dir / name)
+            copied.append(name)
 
     return copied
 
@@ -179,6 +185,7 @@ def package_prepared_data(
     output_root: str | Path,
     tag: str | None = None,
     force: bool = False,
+    include_optional: bool = True,
 ) -> dict[str, Any]:
     cfg = compose_config(config_path, overrides=overrides)
     validate_config(cfg)
@@ -199,7 +206,11 @@ def package_prepared_data(
         shutil.rmtree(bundle_dir)
     bundle_dir.mkdir(parents=True, exist_ok=True)
 
-    copied_files = _copy_required_artifacts(source_dir=source_dir, target_dir=bundle_dir)
+    copied_files = _copy_required_artifacts(
+        source_dir=source_dir,
+        target_dir=bundle_dir,
+        include_optional=include_optional,
+    )
     persisted = persist_effective_config_artifacts(
         run_dir=bundle_dir,
         effective_config=cfg,
@@ -486,6 +497,11 @@ def main(argv: list[str] | None = None) -> int:
     pack_parser.add_argument("--output-root", default="artifacts/prepared_data_bundles")
     pack_parser.add_argument("--tag", default=None)
     pack_parser.add_argument("--force", action="store_true")
+    pack_parser.add_argument(
+        "--no-optional",
+        action="store_true",
+        help="Only package required parquet/summary artifacts; skip JSONL/sample/OOD extras.",
+    )
 
     upload_parser = subparsers.add_parser("upload", help="Upload one prepared-data bundle to HF dataset repo")
     upload_parser.add_argument("--repo-id", required=True)
@@ -518,6 +534,7 @@ def main(argv: list[str] | None = None) -> int:
             output_root=args.output_root,
             tag=args.tag,
             force=bool(args.force),
+            include_optional=not bool(args.no_optional),
         )
         print(json.dumps(result, ensure_ascii=False, sort_keys=True))
         return 0

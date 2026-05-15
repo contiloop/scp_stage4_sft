@@ -89,6 +89,39 @@ def test_package_prepared_data_writes_bundle_manifest_and_config_artifacts(tmp_p
     ]
 
 
+def test_package_prepared_data_can_skip_optional_artifacts(tmp_path: Path) -> None:
+    source_dir = tmp_path / "artifacts" / "data"
+    _write_parquet_rows(
+        source_dir / "datapool.normalized.parquet",
+        [{"id": "n-1", "source": "a"}],
+    )
+    _write_parquet_rows(
+        source_dir / "datapool.train.parquet",
+        [{"id": "t-1", "source": "a"}],
+    )
+    _write_parquet_rows(
+        source_dir / "datapool.eval.parquet",
+        [{"id": "e-1", "source": "b"}],
+    )
+    _write_text(source_dir / "prepare_data_summary.json", "{}\n")
+    _write_text(source_dir / "datapool.train.jsonl", '{"id":"optional"}\n')
+
+    result = package_prepared_data(
+        config_path=str(ROOT / "configs" / "scp_stage4.yaml"),
+        overrides=None,
+        artifacts_dir=source_dir,
+        output_root=tmp_path / "prepared_data_bundles",
+        tag="unit-required-only",
+        include_optional=False,
+    )
+
+    bundle_dir = Path(result["bundle_dir"])
+    assert (bundle_dir / "datapool.train.parquet").exists()
+    assert not (bundle_dir / "datapool.train.jsonl").exists()
+    manifest = json.loads((bundle_dir / "prepared_manifest.json").read_text(encoding="utf-8"))
+    assert "datapool.train.jsonl" not in {entry["path"] for entry in manifest["files"]}
+
+
 def test_upload_prepared_data_bundle_creates_tag(monkeypatch, tmp_path: Path) -> None:
     bundle_dir = tmp_path / "bundle"
     _write_text(bundle_dir / "dummy.txt", "ok\n")

@@ -177,10 +177,11 @@ def test_normalize_full_weight_checkpoint_keys_rewrites_unsloth_nested_prefix(
     assert index_payload["weight_map"] == {base_key: shard_name}
 
 
-def test_normalize_full_weight_checkpoint_keys_rejects_mixed_prefixes(
+def test_normalize_full_weight_checkpoint_keys_allows_nonconflicting_mixed_prefixes(
     tmp_path: Path,
 ) -> None:
     torch = pytest.importorskip("torch")
+    safe_open = pytest.importorskip("safetensors").safe_open
     save_file = pytest.importorskip("safetensors.torch").save_file
     checkpoint_dir = tmp_path / "full_weight_model"
     checkpoint_dir.mkdir()
@@ -194,5 +195,10 @@ def test_normalize_full_weight_checkpoint_keys_rejects_mixed_prefixes(
         str(checkpoint_dir / "model.safetensors"),
     )
 
-    with pytest.raises(WorkerContractError, match="both nested and base-style"):
-        _normalize_full_weight_checkpoint_keys(checkpoint_dir)
+    assert _normalize_full_weight_checkpoint_keys(checkpoint_dir) is True
+
+    with safe_open(checkpoint_dir / "model.safetensors", framework="pt") as handle:
+        keys = set(handle.keys())
+    assert "model.language_model.layers.0.mlp.gate_proj.weight" in keys
+    assert base_key in keys
+    assert nested_key not in keys

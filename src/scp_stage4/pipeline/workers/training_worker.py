@@ -927,22 +927,14 @@ def _normalize_full_weight_checkpoint_keys(checkpoint_dir: Path) -> bool:
         raise WorkerContractError("safetensors package is required to normalize checkpoint keys") from exc
 
     saw_nested = False
-    saw_base_style = False
     for path in safetensor_paths:
         with safe_open(path, framework="pt") as handle:
             for key in handle.keys():
                 if key.startswith(_QWEN35_NESTED_LANGUAGE_PREFIX):
                     saw_nested = True
-                elif key.startswith(_QWEN35_BASE_LANGUAGE_PREFIX):
-                    saw_base_style = True
 
     if not saw_nested:
         return False
-    if saw_base_style:
-        raise WorkerContractError(
-            "full-weight checkpoint contains both nested and base-style language keys; "
-            "refusing ambiguous key normalization"
-        )
 
     for path in safetensor_paths:
         tensors: dict[str, Any] = {}

@@ -19,14 +19,14 @@
       "do_sample": true,
       "temperature": 1.1,
       "top_p": 0.95,
-      "max_new_tokens": 4096,
+      "max_new_tokens": 2048,
       "on_truncation": "discard"
     },
     "q2": {
       "do_sample": false,
       "temperature": 0.0,
       "top_p": null,
-      "max_new_tokens": 4096,
+      "max_new_tokens": 2048,
       "on_truncation": "discard"
     },
     "throughput": {

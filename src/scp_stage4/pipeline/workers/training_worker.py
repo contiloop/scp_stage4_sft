@@ -952,7 +952,13 @@ def _normalize_full_weight_checkpoint_keys(checkpoint_dir: Path) -> bool:
                         f"duplicate checkpoint key after normalization: {normalized_key}"
                     )
                 tensors[normalized_key] = handle.get_tensor(key)
-        save_file(tensors, str(path), metadata=metadata)
+        tmp_path = path.with_name(f".{path.name}.tmp")
+        try:
+            save_file(tensors, str(tmp_path), metadata=metadata)
+            tmp_path.replace(path)
+        finally:
+            if tmp_path.exists():
+                tmp_path.unlink()
 
     for index_path in checkpoint_dir.glob("*.safetensors.index.json"):
         payload = json.loads(index_path.read_text(encoding="utf-8"))

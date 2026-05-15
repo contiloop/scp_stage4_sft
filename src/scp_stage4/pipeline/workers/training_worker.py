@@ -862,11 +862,30 @@ def _unwrap_model(model: Any) -> Any:
     return unwrapped
 
 
+_VISION_PARAM_HINTS = (
+    "visual",
+    "vision",
+    "image_processor",
+    "image_encoder",
+    "patch_embed",
+    "vit",
+)
+
+
 def _prepare_full_weight_model(model: Any) -> Any:
     if hasattr(model, "gradient_checkpointing_enable"):
         model.gradient_checkpointing_enable()
-    for param in model.parameters():
-        param.requires_grad = True
+    # Unfreeze only the language-side parameters. Qwen3.5 VL has a vision
+    # encoder that never participates in text-only forward, so leaving its
+    # params trainable causes DDP to abort with "Expected to have finished
+    # reduction in the prior iteration" because no gradient ever lands on
+    # those buckets.
+    for name, param in model.named_parameters():
+        lower = name.lower()
+        if any(hint in lower for hint in _VISION_PARAM_HINTS):
+            param.requires_grad = False
+        else:
+            param.requires_grad = True
     return model
 
 

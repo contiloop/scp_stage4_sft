@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
 
@@ -30,6 +31,36 @@ def test_resolve_model_name_requires_name() -> None:
 
 def test_resolve_model_name_ok() -> None:
     name = _resolve_model_name({"runtime_config": {"model": {"name": "org/model"}}})
+    assert name == "org/model"
+
+
+def test_resolve_model_name_prefers_full_weight_checkpoint(tmp_path: Path) -> None:
+    checkpoint = tmp_path / "full_weight_model"
+    checkpoint.mkdir()
+    (checkpoint / "config.json").write_text("{}", encoding="utf-8")
+
+    name = _resolve_model_name(
+        {
+            "base_checkpoint": str(checkpoint),
+            "runtime_config": {"model": {"name": "org/model"}},
+        }
+    )
+
+    assert name == str(checkpoint)
+
+
+def test_resolve_model_name_keeps_base_model_for_lora_checkpoint(tmp_path: Path) -> None:
+    adapter = tmp_path / "main_adapter"
+    adapter.mkdir()
+    (adapter / "adapter_config.json").write_text("{}", encoding="utf-8")
+
+    name = _resolve_model_name(
+        {
+            "base_checkpoint": str(adapter),
+            "runtime_config": {"model": {"name": "org/model"}},
+        }
+    )
+
     assert name == "org/model"
 
 

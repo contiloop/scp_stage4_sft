@@ -71,12 +71,25 @@ def _is_lora_adapter_path(path: Path) -> bool:
     return path.exists() and (path / "adapter_config.json").exists()
 
 
+def _is_model_checkpoint_path(path: Path) -> bool:
+    return path.exists() and (
+        (path / "config.json").exists()
+        or (path / "model.safetensors.index.json").exists()
+        or any(path.glob("*.safetensors"))
+    )
+
+
 def _resolve_model_name(request: Mapping[str, Any]) -> str:
     runtime_cfg = _as_dict(request.get("runtime_config"))
     model_cfg = _as_dict(runtime_cfg.get("model"))
     name = str(model_cfg.get("name", "")).strip()
     if not name:
         raise WorkerContractError("runtime_config.model.name is required")
+    base_checkpoint = request.get("base_checkpoint")
+    if isinstance(base_checkpoint, str) and base_checkpoint.strip():
+        checkpoint_path = Path(base_checkpoint)
+        if _is_model_checkpoint_path(checkpoint_path) and not _is_lora_adapter_path(checkpoint_path):
+            return str(checkpoint_path)
     return name
 
 

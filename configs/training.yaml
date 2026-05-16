@@ -51,7 +51,7 @@
       "optimizer": {
         "learning_rate": 3e-05,
         "weight_decay": 0.0,
-        "warmup_ratio": 0.1,
+        "warmup_ratio": 0,
         "lr_scheduler_type": "cosine",
         "optim": "adamw_torch",
         "max_grad_norm": 5.0

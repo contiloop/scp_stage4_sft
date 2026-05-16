@@ -219,7 +219,24 @@ Check source mix ratio anytime:
 make data-source-ratio
 ```
 
-### 5C. Team smoke profile (`smoke32`)
+### 5C. Sync run artifacts to HF dataset repo
+
+After a long real run, sync the run directory to a Hugging Face dataset repo:
+
+```sh
+cd /workspace/scp_stage4_sft
+python3 -c "
+from huggingface_hub import HfApi
+HfApi().upload_large_folder(
+    folder_path='artifacts/runs/run_main_001',
+    repo_id='alwaysgood/scp-stage4-run-main-001',
+    repo_type='dataset',
+)
+print('synced')
+"
+```
+
+### 5D. Team smoke profile (`smoke32`)
 
 Use this tiny prepared bundle to validate end-to-end wiring quickly:
 

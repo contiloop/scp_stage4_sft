@@ -5,7 +5,7 @@
       "subprocess": {
         "collapse_command": [
           "torchrun",
-          "--nproc_per_node=4",
+          "--nproc_per_node=8",
           "-m",
           "scp_stage4.pipeline.workers.training_worker"
         ],
@@ -17,10 +17,19 @@
         ],
         "update_command": [
           "torchrun",
-          "--nproc_per_node=4",
+          "--nproc_per_node=8",
           "-m",
           "scp_stage4.pipeline.workers.training_worker"
         ]
+      }
+    },
+    "collapse_lora": {
+      "num_train_epochs": 0.1
+    },
+    "base_update": {
+      "batching": {
+        "per_device_train_batch_size": 4,
+        "gradient_accumulation_steps": 4
       }
     }
   }

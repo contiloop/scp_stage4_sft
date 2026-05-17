@@ -139,10 +139,12 @@ def test_run_eval_ood_writes_metricx_bleu_chrf_artifacts() -> None:
         summary_path = run_root / "eval" / "ood_test" / "subset_000.summary.json"
         history_path = run_root / "eval" / "ood_test" / "history.jsonl"
         monitor_path = run_root / "ood_eval.jsonl"
+        best_path = run_root / "checkpoints" / "best.json"
         assert rows_path.exists()
         assert summary_path.exists()
         assert history_path.exists()
         assert monitor_path.exists()
+        assert best_path.exists()
 
         rows = read_jsonl(rows_path)
         assert rows, "ood eval rows should not be empty"
@@ -166,6 +168,16 @@ def test_run_eval_ood_writes_metricx_bleu_chrf_artifacts() -> None:
         assert set(monitor) == {"run_id", "subset_idx", "metrics"}
         assert monitor["metrics"]["ood/rows"] == len(rows)
         assert "ood/xcomet_mean" in monitor["metrics"]
+
+        best = json.loads(best_path.read_text(encoding="utf-8"))
+        assert best["status"] == "ok"
+        assert best["run_id"] == run_id
+        assert best["subset_idx"] == 0
+        assert best["metric_key"] == "ood/xcomet_mean"
+        assert best["metric_value"] == monitor["metrics"]["ood/xcomet_mean"]
+        assert best["checkpoint_path"] == str(
+            run_root / "subsets" / "subset_000" / "train_final" / "main_adapter"
+        )
 
         run_eval_ood(
             config_path="configs/scp_stage4.yaml",
@@ -719,6 +731,7 @@ def test_checkpoint_retention_keeps_one_best_plus_last_plus_current(
             subset_size_override=4,
             use_prepared_data=True,
             use_sampled_data=False,
+            run_eval_after_subset=False,
             overrides=[
                 "pipeline.subset.shuffle=false",
                 "training.checkpoint.keep_last_n=1",
@@ -734,6 +747,7 @@ def test_checkpoint_retention_keeps_one_best_plus_last_plus_current(
             subset_size_override=4,
             use_prepared_data=True,
             use_sampled_data=False,
+            run_eval_after_subset=False,
             overrides=[
                 "pipeline.subset.shuffle=false",
                 "training.checkpoint.keep_last_n=1",
@@ -749,6 +763,7 @@ def test_checkpoint_retention_keeps_one_best_plus_last_plus_current(
             subset_size_override=4,
             use_prepared_data=True,
             use_sampled_data=False,
+            run_eval_after_subset=False,
             overrides=[
                 "pipeline.subset.shuffle=false",
                 "training.checkpoint.keep_last_n=1",

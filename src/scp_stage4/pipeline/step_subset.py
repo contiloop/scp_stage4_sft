@@ -1144,6 +1144,10 @@ def _latest_checkpoint_path(ctx: PipelineContext) -> Path:
     return ctx.run_root / "checkpoints" / "latest.json"
 
 
+def _best_checkpoint_path(ctx: PipelineContext) -> Path:
+    return ctx.run_root / "checkpoints" / "best.json"
+
+
 def _read_json_file(path: Path) -> dict[str, Any] | None:
     if not path.exists():
         return None
@@ -1193,6 +1197,66 @@ def _checkpoint_retention_metric_for_best(cfg: Mapping[str, Any]) -> str:
 def _checkpoint_retention_greater_is_better(cfg: Mapping[str, Any]) -> bool:
     raw = _get_by_dotpath(cfg, "training.checkpoint.greater_is_better", True)
     return bool(raw)
+
+
+def _metric_key_to_summary_key(metric_key: str) -> str:
+    if metric_key.startswith("ood/"):
+        return metric_key[len("ood/"):]
+    return metric_key
+
+
+def _update_best_checkpoint_pointer(
+    *,
+    ctx: PipelineContext,
+    summary: Mapping[str, Any],
+    log_metrics: Mapping[str, Any],
+) -> dict[str, Any] | None:
+    if _checkpoint_retention_keep_best_n(ctx.cfg) <= 0:
+        return None
+
+    metric_key = _checkpoint_retention_metric_for_best(ctx.cfg)
+    metric_value = log_metrics.get(metric_key)
+    if isinstance(metric_value, bool) or not isinstance(metric_value, (int, float)):
+        metric_value = summary.get(_metric_key_to_summary_key(metric_key))
+    if isinstance(metric_value, bool) or not isinstance(metric_value, (int, float)):
+        return None
+
+    score = float(metric_value)
+    if not math.isfinite(score):
+        return None
+
+    checkpoint_state_path = ctx.subset_root / "train_final" / "checkpoint_state.json"
+    checkpoint_state = _read_json_file(checkpoint_state_path)
+    if not checkpoint_state or checkpoint_state.get("status") != "ok":
+        return None
+
+    best_path = _best_checkpoint_path(ctx)
+    previous = _read_json_file(best_path)
+    greater_is_better = _checkpoint_retention_greater_is_better(ctx.cfg)
+    previous_score = None
+    if previous and isinstance(previous.get("metric_value"), (int, float)):
+        previous_score = float(previous["metric_value"])
+
+    is_better = previous_score is None or (
+        score > previous_score if greater_is_better else score < previous_score
+    )
+    if not is_better:
+        return previous
+
+    best_state = {
+        "status": "ok",
+        "run_id": ctx.run_id,
+        "subset_idx": ctx.subset_idx,
+        "metric_key": metric_key,
+        "metric_value": score,
+        "greater_is_better": greater_is_better,
+        "checkpoint_path": checkpoint_state.get("checkpoint_path"),
+        "checkpoint_state_path": str(checkpoint_state_path),
+        "eval_summary": dict(summary),
+        "checkpoint_state": checkpoint_state,
+    }
+    _write_json_file(best_path, best_state)
+    return best_state
 
 
 def _metrics_jsonl_path(ctx: PipelineContext) -> Path:
@@ -3444,12 +3508,28 @@ def run_eval_ood(
         ctx=ctx,
         log_metrics=log_metrics,
     )
+    best_checkpoint = _update_best_checkpoint_pointer(
+        ctx=ctx,
+        summary=summary,
+        log_metrics=log_metrics,
+    )
 
     ctx.logger.log_event(
         context=_context_for_phase(ctx, "eval-ood"),
         event_type="phase_completed",
         status="ok",
         artifact_path=str(summary_path.relative_to(ctx.run_root)),
+        extras={
+            "best_checkpoint_updated": bool(
+                best_checkpoint is not None
+                and int(best_checkpoint.get("subset_idx", -1)) == int(ctx.subset_idx)
+            ),
+            "best_checkpoint_path": (
+                str(_best_checkpoint_path(ctx).relative_to(ctx.run_root))
+                if best_checkpoint is not None
+                else None
+            ),
+        },
     )
     ctx.logger.log_metrics(
         context=_context_for_phase(ctx, "eval-ood"),
@@ -3468,6 +3548,8 @@ def run_eval_ood(
         "rows_path": str(rows_path),
         "monitor_path": str(ctx.run_root / "ood_eval.jsonl"),
         "monitor_record": monitor_record,
+        "best_checkpoint_path": str(_best_checkpoint_path(ctx)) if best_checkpoint else None,
+        "best_checkpoint": best_checkpoint,
         "metrics": log_metrics,
     }
 

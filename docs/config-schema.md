@@ -544,7 +544,7 @@ qe:
       alpha: 0.3
       beta: 0.7
     collapse_term:
-      type: c1
+      type: abs_relative_delta
       collapse_rate_threshold: 0.0
     standardization:
       method: zscore

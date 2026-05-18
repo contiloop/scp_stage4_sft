@@ -2041,6 +2041,23 @@ def _select_fragile(scored_rows: Sequence[Mapping[str, Any]], cfg: Mapping[str, 
     return selected
 
 
+def _collapse_term_from_delta(
+    *,
+    q1_quality: float,
+    q2_quality: float,
+    delta_qe: float,
+    epsilon: float,
+    term_type: str,
+) -> float:
+    if term_type == "c1":
+        return max((q1_quality - q2_quality) / max(q1_quality + epsilon, epsilon), 0.0)
+    if term_type == "abs_delta":
+        return abs(delta_qe)
+    if term_type == "abs_relative_delta":
+        return abs(delta_qe) / max(q1_quality + epsilon, epsilon)
+    raise StepSubsetError("qe.scoring.collapse_term.type must be one of: c1, abs_delta, abs_relative_delta")
+
+
 def run_score(
     *,
     config_path: str = "configs/scp_stage4.yaml",
@@ -2061,6 +2078,7 @@ def run_score(
     alpha = float(_get_by_dotpath(ctx.cfg, "qe.scoring.weighted_score.alpha", 0.3))
     beta = float(_get_by_dotpath(ctx.cfg, "qe.scoring.weighted_score.beta", 1.0 - alpha))
     weighted_enabled = bool(_get_by_dotpath(ctx.cfg, "qe.scoring.weighted_score.enabled", True))
+    collapse_term_type = str(_get_by_dotpath(ctx.cfg, "qe.scoring.collapse_term.type", "abs_relative_delta"))
 
     difficulty_terms: list[float] = []
     collapse_terms: list[float] = []
@@ -2069,13 +2087,20 @@ def run_score(
         q1_quality = float(row["qe_q1"])
         q2_quality = float(row["qe_q2"])
         delta_qe = q2_quality - q1_quality
-        collapse_term = max((q1_quality - q2_quality) / max(q1_quality + epsilon, epsilon), 0.0)
+        collapse_term = _collapse_term_from_delta(
+            q1_quality=q1_quality,
+            q2_quality=q2_quality,
+            delta_qe=delta_qe,
+            epsilon=epsilon,
+            term_type=collapse_term_type,
+        )
         difficulty_term = -math.log(max(q1_quality + epsilon, epsilon))
         out = dict(row)
         out["qe_q1"] = q1_quality
         out["qe_q2"] = q2_quality
         out["delta_qe"] = round(delta_qe, 6)
         out["collapse_term"] = round(collapse_term, 6)
+        out["collapse_term_type"] = collapse_term_type
         out["difficulty_term"] = round(difficulty_term, 6)
         difficulty_terms.append(difficulty_term)
         collapse_terms.append(collapse_term)
@@ -2433,6 +2458,7 @@ def _build_api_requests(
                     "qe_q2": float(row["qe_q2"]),
                     "delta_qe": float(row.get("delta_qe", 0.0)),
                     "collapse_term": float(row.get("collapse_term", 0.0)),
+                    "collapse_term_type": str(row.get("collapse_term_type", "")),
                 },
                 "prompt_version": prompt_version,
                 "prompt_hash": prompt_hash,

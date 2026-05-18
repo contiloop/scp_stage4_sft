@@ -31,6 +31,10 @@
         "alpha": 0.1,
         "beta": 0.9
       },
+      "collapse_term": {
+        "type": "abs_relative_delta",
+        "collapse_rate_threshold": 0.0
+      },
       "selection": {
         "default_rule": {
           "top_fraction": 0.01

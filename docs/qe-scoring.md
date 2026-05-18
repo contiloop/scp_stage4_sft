@@ -362,7 +362,7 @@ S_i^{(w)} = \alpha \cdot Z\!\left(-\log(Q_{1,i} + \epsilon)\right) + \beta \cdot
 with:
 
 \[
-c_i(Q_{1,i}, Q_{2,i}) = \max\!\left(\frac{Q_{1,i} - Q_{2,i}}{Q_{1,i} + \epsilon},\; 0\right)
+c_i(Q_{1,i}, Q_{2,i}) = \frac{|Q_{2,i} - Q_{1,i}|}{Q_{1,i} + \epsilon}
 \]
 
 Default:
@@ -372,6 +372,8 @@ weighted_score:
   enabled: true
   alpha: 0.3
   beta: 0.7
+collapse_term:
+  type: abs_relative_delta
 ```
 
 Where:
@@ -385,8 +387,8 @@ Where:
 Interpretation:
 
 - `-log(Q1 + epsilon)` captures baseline difficulty
-- `c_i` captures self-collapse and is computed from both `Q1_i` and `Q2_i`
-- high `S_i` means difficult and collapse-prone
+- `c_i` captures collapse sensitivity or fast improvement magnitude and is computed from both `Q1_i` and `Q2_i`
+- high `S_i` means difficult and unstable under the collapse probe
 
 ---
 
@@ -395,31 +397,36 @@ Interpretation:
 Current default:
 
 \[
-c1_i = c_i(Q_{1,i}, Q_{2,i}) = \max\!\left(\frac{Q_{1,i} - Q_{2,i}}{Q_{1,i} + \epsilon},\; 0\right)
+c_i(Q_{1,i}, Q_{2,i}) = \frac{|Q_{2,i} - Q_{1,i}|}{Q_{1,i} + \epsilon}
 \]
 
 Equivalent interpretation:
 
 ```text
-if Q2 < Q1:
-    collapse exists
-else:
-    collapse = 0
+large absolute Q1/Q2 movement means the sample is model-sensitive
 ```
 
 Config:
 
 ```yaml
 collapse_term:
-  type: c1
+  type: abs_relative_delta
   collapse_rate_threshold: 0.0
 ```
 
 The collapse term must be modular.
 
-Future variants may replace `c1`, including log-ratio or squared variants from PoC experiments.
+Supported variants:
 
-`qe/collapse_rate` is defined as the fraction of scored rows where `c_i > collapse_rate_threshold`. With the default threshold, this is equivalent to the fraction of rows where `Q2 < Q1`.
+- `abs_delta`: absolute QE movement, `abs(Q2 - Q1)`, selecting both degraded and improved-by-probe samples
+- `abs_relative_delta`: relative absolute QE movement, `abs(Q2 - Q1) / (Q1 + epsilon)`, emphasizing large movement from weak Q1 baselines
+- `c1`: legacy one-sided collapse, `max((Q1 - Q2) / (Q1 + epsilon), 0)`
+
+Future variants may include log-ratio or squared variants from PoC experiments.
+
+Each scored and selected row records `collapse_term_type` so archived artifacts remain interpretable even after scoring config changes.
+
+`qe/collapse_rate` is defined as the fraction of scored rows where `c_i > collapse_rate_threshold`.
 
 ---
 

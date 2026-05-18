@@ -352,6 +352,7 @@ class ScoredRow:
     metricx_q2_clamped: bool | None = None
     delta_qe: float | None = None
     collapse_term: float | None = None
+    collapse_term_type: str | None = None
     difficulty_term: float | None = None
     collapse_z: float | None = None
     difficulty_z: float | None = None
@@ -376,6 +377,7 @@ class ScoredRow:
                 "metricx_q2_clamped",
                 "delta_qe",
                 "collapse_term",
+                "collapse_term_type",
                 "difficulty_term",
                 "collapse_z",
                 "difficulty_z",
@@ -399,6 +401,7 @@ class ScoredRow:
             metricx_q2_clamped=_optional_bool(data, "metricx_q2_clamped", context="scored"),
             delta_qe=_optional_float(data, "delta_qe", context="scored"),
             collapse_term=_optional_float(data, "collapse_term", context="scored"),
+            collapse_term_type=_optional_str(data, "collapse_term_type", context="scored"),
             difficulty_term=_optional_float(data, "difficulty_term", context="scored"),
             collapse_z=_optional_float(data, "collapse_z", context="scored"),
             difficulty_z=_optional_float(data, "difficulty_z", context="scored"),
@@ -421,6 +424,7 @@ class ScoredRow:
             "metricx_q2_clamped": self.metricx_q2_clamped,
             "delta_qe": self.delta_qe,
             "collapse_term": self.collapse_term,
+            "collapse_term_type": self.collapse_term_type,
             "difficulty_term": self.difficulty_term,
             "collapse_z": self.collapse_z,
             "difficulty_z": self.difficulty_z,
@@ -446,6 +450,7 @@ class SelectedRow:
     metricx_q2_clamped: bool | None = None
     delta_qe: float | None = None
     collapse_term: float | None = None
+    collapse_term_type: str | None = None
     difficulty_term: float | None = None
     collapse_z: float | None = None
     difficulty_z: float | None = None
@@ -473,6 +478,7 @@ class SelectedRow:
                 "metricx_q2_clamped",
                 "delta_qe",
                 "collapse_term",
+                "collapse_term_type",
                 "difficulty_term",
                 "collapse_z",
                 "difficulty_z",
@@ -500,6 +506,7 @@ class SelectedRow:
             metricx_q2_clamped=_optional_bool(data, "metricx_q2_clamped", context="selected"),
             delta_qe=_optional_float(data, "delta_qe", context="selected"),
             collapse_term=_optional_float(data, "collapse_term", context="selected"),
+            collapse_term_type=_optional_str(data, "collapse_term_type", context="selected"),
             difficulty_term=_optional_float(data, "difficulty_term", context="selected"),
             collapse_z=_optional_float(data, "collapse_z", context="selected"),
             difficulty_z=_optional_float(data, "difficulty_z", context="selected"),
@@ -524,6 +531,7 @@ class SelectedRow:
             "metricx_q2_clamped": self.metricx_q2_clamped,
             "delta_qe": self.delta_qe,
             "collapse_term": self.collapse_term,
+            "collapse_term_type": self.collapse_term_type,
             "difficulty_term": self.difficulty_term,
             "collapse_z": self.collapse_z,
             "difficulty_z": self.difficulty_z,
@@ -537,13 +545,14 @@ class ApiSelection:
     qe_q2: float
     delta_qe: float | None = None
     collapse_term: float | None = None
+    collapse_term_type: str | None = None
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> "ApiSelection":
         data = _ensure_mapping(data, context="api_selection")
         _reject_extra_keys(
             data,
-            allowed={"score_s", "qe_q1", "qe_q2", "delta_qe", "collapse_term"},
+            allowed={"score_s", "qe_q1", "qe_q2", "delta_qe", "collapse_term", "collapse_term_type"},
             context="api_selection",
         )
         return cls(
@@ -552,6 +561,7 @@ class ApiSelection:
             qe_q2=_require_float(data, "qe_q2", context="api_selection"),
             delta_qe=_optional_float(data, "delta_qe", context="api_selection"),
             collapse_term=_optional_float(data, "collapse_term", context="api_selection"),
+            collapse_term_type=_optional_str(data, "collapse_term_type", context="api_selection"),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -561,6 +571,7 @@ class ApiSelection:
             "qe_q2": self.qe_q2,
             "delta_qe": self.delta_qe,
             "collapse_term": self.collapse_term,
+            "collapse_term_type": self.collapse_term_type,
         }
 
 

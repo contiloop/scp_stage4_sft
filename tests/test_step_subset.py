@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 
 import scp_stage4.pipeline.step_subset as step_subset_mod
-from scp_stage4.data import read_jsonl
+from scp_stage4.data import read_jsonl, write_jsonl
 from scp_stage4.pipeline.prepare_data import run_prepare_data
 from scp_stage4.pipeline.step_subset import (
     StepSubsetError,
@@ -39,6 +39,91 @@ def _cleanup(run_id: str) -> None:
     root = _run_root(run_id)
     if root.exists():
         shutil.rmtree(root)
+
+
+def test_run_score_default_selects_absolute_relative_delta_qe() -> None:
+    run_id = "test_score_abs_relative_delta"
+    _cleanup(run_id)
+    try:
+        subset_root = _subset_root(run_id)
+        subset_root.mkdir(parents=True, exist_ok=True)
+        metadata = {
+            "title": None,
+            "document_type": "article",
+            "text_role": "body",
+            "original_id": None,
+            "parent_id": None,
+            "chunk_idx": None,
+        }
+        write_jsonl(
+            subset_root / "q2.jsonl",
+            [
+                {
+                    "id": "improved",
+                    "dataset": "fixture",
+                    "source": "source improved",
+                    "metadata": metadata,
+                    "mt_q1": "q1",
+                    "mt_q2": "q2",
+                    "qe_q1": 0.80,
+                    "qe_raw_q1": 0.80,
+                    "metricx_q1_clamped": False,
+                    "qe_q2": 0.92,
+                    "qe_raw_q2": 0.92,
+                    "metricx_q2_clamped": False,
+                },
+                {
+                    "id": "degraded",
+                    "dataset": "fixture",
+                    "source": "source degraded",
+                    "metadata": metadata,
+                    "mt_q1": "q1",
+                    "mt_q2": "q2",
+                    "qe_q1": 0.80,
+                    "qe_raw_q1": 0.80,
+                    "metricx_q1_clamped": False,
+                    "qe_q2": 0.74,
+                    "qe_raw_q2": 0.74,
+                    "metricx_q2_clamped": False,
+                },
+                {
+                    "id": "stable",
+                    "dataset": "fixture",
+                    "source": "source stable",
+                    "metadata": metadata,
+                    "mt_q1": "q1",
+                    "mt_q2": "q2",
+                    "qe_q1": 0.80,
+                    "qe_raw_q1": 0.80,
+                    "metricx_q1_clamped": False,
+                    "qe_q2": 0.81,
+                    "qe_raw_q2": 0.81,
+                    "metricx_q2_clamped": False,
+                },
+            ],
+        )
+
+        run_score(
+            config_path="configs/scp_stage4.yaml",
+            overrides=[
+                "qe.scoring.weighted_score.alpha=0.0",
+                "qe.scoring.weighted_score.beta=1.0",
+                "qe.scoring.selection.default_rule.top_fraction=0.33",
+            ],
+            run_id_override=run_id,
+            subset_idx=0,
+        )
+
+        scored = {row["id"]: row for row in read_jsonl(subset_root / "scored.jsonl")}
+        selected = read_jsonl(subset_root / "selected.jsonl")
+        assert scored["improved"]["delta_qe"] == 0.12
+        assert scored["improved"]["collapse_term"] == 0.15
+        assert scored["improved"]["collapse_term_type"] == "abs_relative_delta"
+        assert scored["degraded"]["collapse_term"] == 0.075
+        assert [row["id"] for row in selected] == ["improved"]
+        assert selected[0]["collapse_term_type"] == "abs_relative_delta"
+    finally:
+        _cleanup(run_id)
 
 
 def test_run_subset_writes_stepwise_artifact_chain() -> None:

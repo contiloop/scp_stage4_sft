@@ -5,6 +5,42 @@
       "subprocess": {
         "command": ["python3", "-m", "scp_stage4.pipeline.workers.external_api_worker"]
       }
+    },
+    "routing": {
+      "splits": [
+        {
+          "name": "gemini-3.1-flash-lite-off",
+          "provider": "gemini",
+          "model": "gemini-3.1-flash-lite",
+          "params": {"thinking_mode": "off"},
+          "weight": 0.8
+        },
+        {
+          "name": "gemini-3.1-flash-lite-dynamic",
+          "provider": "gemini",
+          "model": "gemini-3.1-flash-lite",
+          "params": {"thinking_mode": "dynamic", "thinking_budget": -1},
+          "weight": 0.1
+        },
+        {
+          "name": "gpt-5.5-thinking",
+          "provider": "openai",
+          "model": "gpt-5.5",
+          "params": {"reasoning_effort": "medium", "text_verbosity": "low"},
+          "weight": 0.1
+        }
+      ]
+    },
+    "concurrency": {
+      "max_workers": 24,
+      "per_provider": {
+        "openai": 4,
+        "anthropic": 1,
+        "gemini": 20
+      }
+    },
+    "providers": {
+      "anthropic": {"enabled": false}
     }
   }
 }

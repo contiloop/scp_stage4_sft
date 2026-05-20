@@ -18,7 +18,7 @@ from pathlib import PurePosixPath
 from typing import Iterable
 
 
-ARCHIVE_SUFFIXES = (".tar.gz", ".tgz", ".tar.xz", ".tar", ".zip")
+ARCHIVE_SUFFIXES = (".tar.gz", ".tgz", ".tar.xz", ".tar.zst", ".tar", ".zip")
 REPO_TYPES = ("model", "dataset", "space")
 
 
@@ -37,12 +37,43 @@ def _run(cmd: list[str]) -> None:
 def _safe_extract_tar(archive_path: Path, dest_dir: Path) -> None:
     dest_dir.mkdir(parents=True, exist_ok=True)
     dest_resolved = dest_dir.resolve()
+    if archive_path.name.endswith(".tar.zst"):
+        _safe_extract_tar_zst(archive_path, dest_dir, dest_resolved)
+        return
     with tarfile.open(archive_path) as handle:
         for member in handle.getmembers():
             target = (dest_dir / member.name).resolve()
             if dest_resolved not in target.parents and target != dest_resolved:
                 raise RuntimeError(f"unsafe archive member path: {member.name}")
         handle.extractall(dest_dir)
+
+
+def _safe_extract_tar_zst(archive_path: Path, dest_dir: Path, dest_resolved: Path) -> None:
+    list_result = subprocess.run(
+        ["tar", "--zstd", "-tf", str(archive_path)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    if list_result.returncode != 0:
+        detail = (list_result.stderr or list_result.stdout or "").strip()
+        raise RuntimeError(f"failed to list tar.zst archive {archive_path}: {detail}")
+    for raw_name in list_result.stdout.splitlines():
+        name = raw_name.strip()
+        if not name:
+            continue
+        target = (dest_dir / name).resolve()
+        if dest_resolved not in target.parents and target != dest_resolved:
+            raise RuntimeError(f"unsafe archive member path: {name}")
+    extract_result = subprocess.run(
+        ["tar", "--zstd", "-xf", str(archive_path), "-C", str(dest_dir)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    if extract_result.returncode != 0:
+        detail = (extract_result.stderr or extract_result.stdout or "").strip()
+        raise RuntimeError(f"failed to extract tar.zst archive {archive_path}: {detail}")
 
 
 def _safe_extract_zip(archive_path: Path, dest_dir: Path) -> None:

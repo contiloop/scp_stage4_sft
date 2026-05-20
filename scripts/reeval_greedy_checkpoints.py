@@ -5,18 +5,28 @@ from __future__ import annotations
 
 import argparse
 import json
+import posixpath
 import re
 import shutil
 import subprocess
 import sys
 import tarfile
 import zipfile
+from dataclasses import dataclass
 from pathlib import Path
+from pathlib import PurePosixPath
 from typing import Iterable
 
 
 ARCHIVE_SUFFIXES = (".tar.gz", ".tgz", ".tar.xz", ".tar", ".zip")
 REPO_TYPES = ("model", "dataset", "space")
+
+
+@dataclass(frozen=True)
+class HfPayload:
+    path: Path
+    kind: str
+    source: str
 
 
 def _run(cmd: list[str]) -> None:
@@ -67,9 +77,9 @@ def _numeric_tokens(path: str) -> set[int]:
     return tokens
 
 
-def _archive_matches_subset(path: str, subset_idx: int) -> bool:
+def _subset_patterns(subset_idx: int) -> tuple[str, ...]:
     subset_padded = f"{subset_idx:03d}"
-    subset_patterns = (
+    return (
         f"subset_{subset_padded}",
         f"subset-{subset_padded}",
         f"subset_{subset_idx}",
@@ -83,10 +93,42 @@ def _archive_matches_subset(path: str, subset_idx: int) -> bool:
         f"ckpt_{subset_idx}",
         f"ckpt-{subset_idx}",
     )
+
+
+def _archive_matches_subset(path: str, subset_idx: int) -> bool:
+    subset_patterns = _subset_patterns(subset_idx)
     lowered = path.lower()
     if any(pattern in lowered for pattern in subset_patterns):
         return True
     return subset_idx in _numeric_tokens(path)
+
+
+def _tree_file_matches_subset(path: str, subset_idx: int) -> bool:
+    lowered = path.lower()
+    if any(pattern in lowered for pattern in _subset_patterns(subset_idx)):
+        return True
+    tokens = _numeric_tokens(path)
+    if subset_idx not in tokens:
+        return False
+    return any(
+        keyword in lowered
+        for keyword in ("subset", "checkpoint", "ckpt", "train_final", "adapter")
+    )
+
+
+def _prefix_for_subset_tree(paths: list[str], subset_idx: int) -> str | None:
+    for path in sorted(paths, key=lambda item: (len(item), item)):
+        parts = PurePosixPath(path).parts
+        for idx, part in enumerate(parts):
+            lowered = part.lower()
+            if any(pattern in lowered for pattern in _subset_patterns(subset_idx)):
+                return "/".join(parts[: idx + 1])
+
+    parent_dirs = [str(PurePosixPath(path).parent) for path in paths]
+    if not parent_dirs:
+        return None
+    common = posixpath.commonpath(parent_dirs)
+    return None if common in {"", "."} else common
 
 
 def _download_from_hf(
@@ -96,9 +138,9 @@ def _download_from_hf(
     revision: str,
     subset_idx: int,
     download_dir: Path,
-) -> Path:
+) -> HfPayload:
     try:
-        from huggingface_hub import hf_hub_download, list_repo_files
+        from huggingface_hub import hf_hub_download, list_repo_files, snapshot_download
         from huggingface_hub.errors import RepositoryNotFoundError
     except Exception as exc:
         raise RuntimeError(
@@ -141,33 +183,78 @@ def _download_from_hf(
         for path in archive_files
         if _archive_matches_subset(path, subset_idx)
     ]
-    if not candidates:
-        preview = "\n".join(f"- {path}" for path in sorted(archive_files)[:50])
-        if len(archive_files) > 50:
-            preview += f"\n... and {len(archive_files) - 50} more"
-        if not preview:
-            preview = "(no .tar/.tgz/.zip archive files found)"
-        raise RuntimeError(
-            f"no archive found for {subset_name} in {resolved_repo_type} repo "
-            f"{repo_id}@{revision}. Archive candidates:\n{preview}"
+    if candidates:
+        preferred = sorted(
+            candidates,
+            key=lambda path: ("/archive" not in path.lower(), len(path), path),
+        )[0]
+        print(
+            f"[reeval] using archive for {subset_name}: {preferred}",
+            file=sys.stderr,
+        )
+        local_path = hf_hub_download(
+            repo_id=repo_id,
+            repo_type=resolved_repo_type,
+            revision=revision,
+            filename=preferred,
+            local_dir=download_dir,
+        )
+        return HfPayload(path=Path(local_path), kind="archive", source=preferred)
+
+    tree_files = [
+        path
+        for path in files
+        if not _is_archive_path(path) and _tree_file_matches_subset(path, subset_idx)
+    ]
+    if tree_files:
+        prefix = _prefix_for_subset_tree(tree_files, subset_idx)
+        allow_patterns = [f"{prefix}/**"] if prefix else sorted(tree_files)
+        local_dir = download_dir / "snapshots" / subset_name
+        if local_dir.exists():
+            shutil.rmtree(local_dir)
+        print(
+            f"[reeval] no archive for {subset_name}; downloading file tree "
+            f"prefix={prefix or '(explicit files)'}",
+            file=sys.stderr,
+        )
+        snapshot_download(
+            repo_id=repo_id,
+            repo_type=resolved_repo_type,
+            revision=revision,
+            allow_patterns=allow_patterns,
+            local_dir=local_dir,
+        )
+        payload_path = local_dir / prefix if prefix else local_dir
+        return HfPayload(
+            path=payload_path,
+            kind="tree",
+            source=prefix or ",".join(sorted(tree_files)),
         )
 
-    preferred = sorted(
-        candidates,
-        key=lambda path: ("/archive" not in path.lower(), len(path), path),
-    )[0]
-    print(
-        f"[reeval] using archive for {subset_name}: {preferred}",
-        file=sys.stderr,
+    archive_preview = "\n".join(f"- {path}" for path in sorted(archive_files)[:50])
+    if len(archive_files) > 50:
+        archive_preview += f"\n... and {len(archive_files) - 50} more"
+    if not archive_preview:
+        archive_preview = "(no .tar/.tgz/.zip archive files found)"
+
+    relevant = [
+        path
+        for path in files
+        if any(token in path.lower() for token in ("subset", "checkpoint", "ckpt", "adapter", "train_final"))
+        or subset_idx in _numeric_tokens(path)
+    ]
+    relevant_preview = "\n".join(f"- {path}" for path in sorted(relevant)[:80])
+    if len(relevant) > 80:
+        relevant_preview += f"\n... and {len(relevant) - 80} more"
+    if not relevant_preview:
+        relevant_preview = "(no subset/checkpoint-looking files found)"
+
+    raise RuntimeError(
+        f"no archive or checkpoint file tree found for {subset_name} in "
+        f"{resolved_repo_type} repo {repo_id}@{revision}.\n"
+        f"Archive candidates:\n{archive_preview}\n"
+        f"Relevant repo files:\n{relevant_preview}"
     )
-    local_path = hf_hub_download(
-        repo_id=repo_id,
-        repo_type=resolved_repo_type,
-        revision=revision,
-        filename=preferred,
-        local_dir=download_dir,
-    )
-    return Path(local_path)
 
 
 def _find_subset_root(extract_root: Path, subset_idx: int) -> Path:
@@ -222,20 +309,57 @@ def _resolve_checkpoint_path(subset_root: Path) -> Path:
     raise RuntimeError(f"no usable checkpoint found under {subset_root / 'train_final'}")
 
 
+def _copy_tree_payload_to_subset(
+    *,
+    payload_root: Path,
+    target_subset: Path,
+    subset_idx: int,
+) -> None:
+    if target_subset.exists():
+        shutil.rmtree(target_subset)
+    target_subset.parent.mkdir(parents=True, exist_ok=True)
+
+    try:
+        restored_subset = _find_subset_root(payload_root, subset_idx)
+        shutil.copytree(restored_subset, target_subset)
+        return
+    except RuntimeError:
+        pass
+
+    if (payload_root / "train_final").exists():
+        shutil.copytree(payload_root, target_subset)
+        return
+
+    if _is_usable_checkpoint(payload_root):
+        checkpoint_dir = target_subset / "train_final" / "main_adapter"
+        checkpoint_dir.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(payload_root, checkpoint_dir)
+        return
+
+    usable_dirs = [path for path in payload_root.rglob("*") if path.is_dir() and _is_usable_checkpoint(path)]
+    if usable_dirs:
+        checkpoint_dir = target_subset / "train_final" / "main_adapter"
+        checkpoint_dir.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(sorted(usable_dirs, key=lambda path: (len(str(path)), str(path)))[0], checkpoint_dir)
+        return
+
+    raise RuntimeError(f"downloaded file tree has no usable checkpoint: {payload_root}")
+
+
 def _write_latest_pointer(
     *,
     run_root: Path,
     run_id: str,
     subset_idx: int,
     checkpoint_path: Path,
-    source_archive: Path,
+    source_payload: str,
 ) -> None:
     payload = {
         "status": "ok",
         "run_id": run_id,
         "subset_idx": subset_idx,
         "checkpoint_path": str(checkpoint_path),
-        "source_archive": str(source_archive),
+        "source_payload": source_payload,
     }
     latest_path = run_root / "checkpoints" / "latest.json"
     latest_path.parent.mkdir(parents=True, exist_ok=True)
@@ -262,16 +386,20 @@ def main(argv: list[str] | None = None) -> int:
         subset_name = f"subset_{subset_idx:03d}"
         extract_root = download_dir / "extracted" / subset_name
         if not args.skip_download:
-            archive_path = _download_from_hf(
+            payload = _download_from_hf(
                 repo_id=args.repo_id,
                 repo_type=args.repo_type,
                 revision=args.revision,
                 subset_idx=subset_idx,
                 download_dir=download_dir,
             )
-            if extract_root.exists():
-                shutil.rmtree(extract_root)
-            _safe_extract_archive(archive_path, extract_root)
+            if payload.kind == "archive":
+                if extract_root.exists():
+                    shutil.rmtree(extract_root)
+                _safe_extract_archive(payload.path, extract_root)
+                payload_root = extract_root
+            else:
+                payload_root = payload.path
         else:
             archives = sorted((download_dir).rglob(f"*{subset_name}*"))
             archives = [p for p in archives if _is_archive_path(p.name)]
@@ -280,13 +408,15 @@ def main(argv: list[str] | None = None) -> int:
             archive_path = archives[0]
             if not extract_root.exists():
                 _safe_extract_archive(archive_path, extract_root)
+            payload = HfPayload(path=archive_path, kind="archive", source=str(archive_path))
+            payload_root = extract_root
 
-        restored_subset = _find_subset_root(extract_root, subset_idx)
         target_subset = run_root / "subsets" / subset_name
-        if target_subset.exists():
-            shutil.rmtree(target_subset)
-        target_subset.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copytree(restored_subset, target_subset)
+        _copy_tree_payload_to_subset(
+            payload_root=payload_root,
+            target_subset=target_subset,
+            subset_idx=subset_idx,
+        )
 
         checkpoint_path = _resolve_checkpoint_path(target_subset)
         _write_latest_pointer(
@@ -294,7 +424,7 @@ def main(argv: list[str] | None = None) -> int:
             run_id=args.run_id,
             subset_idx=subset_idx,
             checkpoint_path=checkpoint_path,
-            source_archive=archive_path,
+            source_payload=payload.source,
         )
         _run(
             [

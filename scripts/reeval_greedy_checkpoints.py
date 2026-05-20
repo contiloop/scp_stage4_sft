@@ -14,6 +14,7 @@ from typing import Iterable
 
 
 ARCHIVE_SUFFIXES = (".tar.gz", ".tgz", ".tar.xz", ".tar")
+REPO_TYPES = ("model", "dataset", "space")
 
 
 def _run(cmd: list[str]) -> None:
@@ -42,13 +43,42 @@ def _download_from_hf(
 ) -> Path:
     try:
         from huggingface_hub import hf_hub_download, list_repo_files
+        from huggingface_hub.errors import RepositoryNotFoundError
     except Exception as exc:
         raise RuntimeError(
             "huggingface_hub is required. Run `pip install huggingface_hub` in the remote env."
         ) from exc
 
     subset_name = f"subset_{subset_idx:03d}"
-    files = list_repo_files(repo_id=repo_id, repo_type=repo_type, revision=revision)
+    repo_types = [repo_type] + [kind for kind in REPO_TYPES if kind != repo_type]
+    files: list[str] | None = None
+    resolved_repo_type: str | None = None
+    repo_errors: list[str] = []
+    for candidate_repo_type in repo_types:
+        try:
+            files = list_repo_files(
+                repo_id=repo_id,
+                repo_type=candidate_repo_type,
+                revision=revision,
+            )
+            resolved_repo_type = candidate_repo_type
+            if candidate_repo_type != repo_type:
+                print(
+                    f"[reeval] repo_type={repo_type!r} not found; "
+                    f"using repo_type={candidate_repo_type!r}",
+                    file=sys.stderr,
+                )
+            break
+        except RepositoryNotFoundError as exc:
+            repo_errors.append(f"{candidate_repo_type}: {exc}")
+    if files is None or resolved_repo_type is None:
+        detail = "\n".join(repo_errors)
+        raise RuntimeError(
+            f"repo not found as any supported type for {repo_id}@{revision}. "
+            "If it is private, run `huggingface-cli login` or set HF_TOKEN.\n"
+            f"{detail}"
+        )
+
     candidates = [
         path
         for path in files
@@ -63,13 +93,13 @@ def _download_from_hf(
         candidates = loose
     if not candidates:
         raise RuntimeError(
-            f"no archive found for {subset_name} in {repo_type} repo {repo_id}@{revision}"
+            f"no archive found for {subset_name} in {resolved_repo_type} repo {repo_id}@{revision}"
         )
 
     preferred = sorted(candidates, key=lambda path: ("/archives/" not in path, len(path), path))[0]
     local_path = hf_hub_download(
         repo_id=repo_id,
-        repo_type=repo_type,
+        repo_type=resolved_repo_type,
         revision=revision,
         filename=preferred,
         local_dir=download_dir,

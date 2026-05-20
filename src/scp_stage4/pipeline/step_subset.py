@@ -1173,6 +1173,13 @@ def _latest_checkpoint_ref(ctx: PipelineContext) -> str | None:
     return str(value) if value is not None else None
 
 
+def _requires_base_checkpoint_for_update(ctx: PipelineContext) -> bool:
+    raw = _get_by_dotpath(ctx.cfg, "training.base_update.requires_base_checkpoint")
+    if raw is not None:
+        return bool(raw)
+    return False
+
+
 def _checkpoint_retention_keep_last_n(cfg: Mapping[str, Any]) -> int:
     raw = _get_by_dotpath(cfg, "training.checkpoint.keep_last_n", 2)
     if isinstance(raw, bool) or not isinstance(raw, int):
@@ -2712,6 +2719,18 @@ def run_update_base(
                 }
             ]
         else:
+            latest_checkpoint = _latest_checkpoint_ref(ctx)
+            requires_base_checkpoint = _requires_base_checkpoint_for_update(ctx)
+            if requires_base_checkpoint:
+                if not isinstance(latest_checkpoint, str) or not latest_checkpoint.strip():
+                    raise StepSubsetError(
+                        "update-base requires an existing latest checkpoint, but checkpoints/latest.json is missing"
+                    )
+                if not Path(latest_checkpoint).exists():
+                    raise StepSubsetError(
+                        f"update-base requires existing latest checkpoint, but path is missing: {latest_checkpoint}"
+                    )
+
             status_rows = _run_training_subprocess_jsonl(
                 ctx=ctx,
                 command_key="update_command",
@@ -2729,7 +2748,8 @@ def run_update_base(
                         "output_dir": str(train_final_dir),
                         "training_config": _get_by_dotpath(ctx.cfg, "training.base_update", {}),
                         "model": _get_by_dotpath(ctx.cfg, "model", {}),
-                        "base_checkpoint": _latest_checkpoint_ref(ctx),
+                        "base_checkpoint": latest_checkpoint,
+                        "requires_base_checkpoint": requires_base_checkpoint,
                         "logging_config": _get_by_dotpath(ctx.cfg, "logging", {}),
                         "runtime_config": {
                             "prompts": _get_by_dotpath(ctx.cfg, "prompts", {}),

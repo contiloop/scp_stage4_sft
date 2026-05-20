@@ -41,6 +41,37 @@ def test_resolve_train_runtime_respects_explicit_load_in_4bit_true() -> None:
     assert runtime.load_in_4bit is True
 
 
+def test_resolve_train_runtime_requires_existing_base_checkpoint_when_marked(tmp_path: Path) -> None:
+    missing = tmp_path / "missing_checkpoint"
+    with pytest.raises(WorkerContractError, match="required base_checkpoint path not found"):
+        _resolve_train_runtime(
+            {
+                "model": {
+                    "name": "alwaysgood/qwen35-it",
+                    "max_length": 8192,
+                },
+                "base_checkpoint": str(missing),
+                "requires_base_checkpoint": True,
+            }
+        )
+
+
+def test_resolve_train_runtime_uses_required_base_checkpoint(tmp_path: Path) -> None:
+    checkpoint = tmp_path / "checkpoint"
+    checkpoint.mkdir()
+    runtime = _resolve_train_runtime(
+        {
+            "model": {
+                "name": "alwaysgood/qwen35-it",
+                "max_length": 8192,
+            },
+            "base_checkpoint": str(checkpoint),
+            "requires_base_checkpoint": True,
+        }
+    )
+    assert runtime.model_ref == str(checkpoint)
+
+
 def test_resolve_train_runtime_reads_attention_impl(monkeypatch) -> None:
     monkeypatch.delenv("ATTN_IMPLEMENTATION", raising=False)
     runtime = _resolve_train_runtime(

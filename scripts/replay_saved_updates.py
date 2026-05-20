@@ -120,6 +120,37 @@ def _mark_replay_complete(run_root: Path) -> None:
     )
 
 
+def _latest_checkpoint_path(run_root: Path) -> Path:
+    return run_root / "checkpoints" / "latest.json"
+
+
+def _assert_no_latest_checkpoint(run_root: Path) -> None:
+    latest_path = _latest_checkpoint_path(run_root)
+    if latest_path.exists():
+        raise RuntimeError(
+            "replay must start subset_000 from the configured base model, but "
+            f"{latest_path} already exists. Use --clean-run or a new --run-id."
+        )
+
+
+def _assert_latest_checkpoint_exists(run_root: Path, *, subset_idx: int) -> None:
+    latest_path = _latest_checkpoint_path(run_root)
+    if not latest_path.exists():
+        raise RuntimeError(
+            f"subset_{subset_idx:03d} replay would fall back to model.name because "
+            f"{latest_path} is missing"
+        )
+    state = json.loads(latest_path.read_text(encoding="utf-8"))
+    checkpoint = state.get("checkpoint_path")
+    if not isinstance(checkpoint, str) or not checkpoint.strip():
+        raise RuntimeError(f"{latest_path} missing checkpoint_path")
+    if not Path(checkpoint).exists():
+        raise RuntimeError(
+            f"subset_{subset_idx:03d} replay would fall back to model.name because "
+            f"latest checkpoint path does not exist: {checkpoint}"
+        )
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--repo-id", default="alwaysgood/scp-stage4-run-main-001")
@@ -162,6 +193,13 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     for subset_idx in subset_indices:
+        if subset_idx == 0:
+            _assert_no_latest_checkpoint(run_root)
+            checkpoint_guard_overrides = []
+        else:
+            _assert_latest_checkpoint_exists(run_root, subset_idx=subset_idx)
+            checkpoint_guard_overrides = ["training.base_update.requires_base_checkpoint=true"]
+
         subset_name = _subset_name(subset_idx)
         print(f"[replay] restoring {subset_name}", file=sys.stderr)
         _restore_subset_artifacts(
@@ -186,6 +224,7 @@ def main(argv: list[str] | None = None) -> int:
                 args.run_id,
                 "--subset-idx",
                 str(subset_idx),
+                *checkpoint_guard_overrides,
                 *overrides,
             ]
         )

@@ -197,8 +197,14 @@ def _resolve_train_runtime(row: Mapping[str, Any]) -> _TrainRuntime:
 
     base_checkpoint = row.get("base_checkpoint")
     model_ref = model_name
-    if isinstance(base_checkpoint, str) and base_checkpoint.strip() and Path(base_checkpoint).exists():
-        model_ref = base_checkpoint
+    if isinstance(base_checkpoint, str) and base_checkpoint.strip():
+        checkpoint_path = Path(base_checkpoint)
+        if checkpoint_path.exists():
+            model_ref = base_checkpoint
+        elif bool(row.get("requires_base_checkpoint", False)):
+            raise WorkerContractError(f"required base_checkpoint path not found: {checkpoint_path}")
+    elif bool(row.get("requires_base_checkpoint", False)):
+        raise WorkerContractError("required base_checkpoint is missing")
 
     return _TrainRuntime(
         model_ref=model_ref,

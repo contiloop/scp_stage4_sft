@@ -290,15 +290,22 @@ def _download_from_hf(
 
 def _find_subset_root(extract_root: Path, subset_idx: int) -> Path:
     subset_name = f"subset_{subset_idx:03d}"
+    candidates: list[Path] = []
     if extract_root.name == subset_name and extract_root.is_dir():
-        return extract_root
+        candidates.append(extract_root)
     direct = extract_root / subset_name
     if direct.exists():
-        return direct
-    matches = [path for path in extract_root.rglob(subset_name) if path.is_dir()]
-    if not matches:
+        candidates.append(direct)
+    candidates.extend(
+        path for path in extract_root.rglob("*") if path.is_dir() and path.name == subset_name
+    )
+    if not candidates:
         raise RuntimeError(f"extracted archive does not contain {subset_name}")
-    return matches[0]
+    unique = sorted(set(candidates), key=lambda path: (len(str(path)), str(path)))
+    for candidate in unique:
+        if (candidate / "api.jsonl").exists() and (candidate / "clean_base.json").exists():
+            return candidate
+    return unique[0]
 
 
 def _checkpoint_candidates(subset_root: Path) -> Iterable[Path]:

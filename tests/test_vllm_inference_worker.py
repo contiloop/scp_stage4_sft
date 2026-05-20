@@ -49,19 +49,43 @@ def test_resolve_model_name_prefers_full_weight_checkpoint(tmp_path: Path) -> No
     assert name == str(checkpoint)
 
 
-def test_resolve_model_name_keeps_base_model_for_lora_checkpoint(tmp_path: Path) -> None:
+def test_resolve_model_name_rejects_lora_checkpoint(tmp_path: Path) -> None:
     adapter = tmp_path / "main_adapter"
     adapter.mkdir()
     (adapter / "adapter_config.json").write_text("{}", encoding="utf-8")
 
-    name = _resolve_model_name(
-        {
-            "base_checkpoint": str(adapter),
-            "runtime_config": {"model": {"name": "org/model"}},
-        }
-    )
+    with pytest.raises(WorkerContractError, match="base_checkpoint points to a LoRA adapter"):
+        _resolve_model_name(
+            {
+                "base_checkpoint": str(adapter),
+                "runtime_config": {"model": {"name": "org/model"}},
+            }
+        )
 
-    assert name == "org/model"
+
+def test_resolve_model_name_rejects_missing_checkpoint(tmp_path: Path) -> None:
+    checkpoint = tmp_path / "missing"
+
+    with pytest.raises(WorkerContractError, match="base_checkpoint path not found"):
+        _resolve_model_name(
+            {
+                "base_checkpoint": str(checkpoint),
+                "runtime_config": {"model": {"name": "org/model"}},
+            }
+        )
+
+
+def test_resolve_model_name_rejects_invalid_checkpoint(tmp_path: Path) -> None:
+    checkpoint = tmp_path / "not_a_checkpoint"
+    checkpoint.mkdir()
+
+    with pytest.raises(WorkerContractError, match="base_checkpoint is not a full-weight checkpoint"):
+        _resolve_model_name(
+            {
+                "base_checkpoint": str(checkpoint),
+                "runtime_config": {"model": {"name": "org/model"}},
+            }
+        )
 
 
 def test_resolve_vllm_kwargs_defaults() -> None:

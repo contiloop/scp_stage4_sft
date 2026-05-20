@@ -88,8 +88,17 @@ def _resolve_model_name(request: Mapping[str, Any]) -> str:
     base_checkpoint = request.get("base_checkpoint")
     if isinstance(base_checkpoint, str) and base_checkpoint.strip():
         checkpoint_path = Path(base_checkpoint)
-        if _is_model_checkpoint_path(checkpoint_path) and not _is_lora_adapter_path(checkpoint_path):
-            return str(checkpoint_path)
+        if not checkpoint_path.exists():
+            raise WorkerContractError(f"base_checkpoint path not found: {checkpoint_path}")
+        if _is_lora_adapter_path(checkpoint_path):
+            raise WorkerContractError(
+                f"base_checkpoint points to a LoRA adapter, not a full-weight checkpoint: {checkpoint_path}"
+            )
+        if not _is_model_checkpoint_path(checkpoint_path):
+            raise WorkerContractError(
+                f"base_checkpoint is not a full-weight checkpoint: {checkpoint_path}"
+            )
+        return str(checkpoint_path)
     return name
 
 

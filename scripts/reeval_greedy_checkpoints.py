@@ -5,15 +5,17 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import shutil
 import subprocess
 import sys
 import tarfile
+import zipfile
 from pathlib import Path
 from typing import Iterable
 
 
-ARCHIVE_SUFFIXES = (".tar.gz", ".tgz", ".tar.xz", ".tar")
+ARCHIVE_SUFFIXES = (".tar.gz", ".tgz", ".tar.xz", ".tar", ".zip")
 REPO_TYPES = ("model", "dataset", "space")
 
 
@@ -31,6 +33,60 @@ def _safe_extract_tar(archive_path: Path, dest_dir: Path) -> None:
             if dest_resolved not in target.parents and target != dest_resolved:
                 raise RuntimeError(f"unsafe archive member path: {member.name}")
         handle.extractall(dest_dir)
+
+
+def _safe_extract_zip(archive_path: Path, dest_dir: Path) -> None:
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    dest_resolved = dest_dir.resolve()
+    with zipfile.ZipFile(archive_path) as handle:
+        for member in handle.infolist():
+            target = (dest_dir / member.filename).resolve()
+            if dest_resolved not in target.parents and target != dest_resolved:
+                raise RuntimeError(f"unsafe archive member path: {member.filename}")
+        handle.extractall(dest_dir)
+
+
+def _safe_extract_archive(archive_path: Path, dest_dir: Path) -> None:
+    if archive_path.name.endswith(".zip"):
+        _safe_extract_zip(archive_path, dest_dir)
+        return
+    _safe_extract_tar(archive_path, dest_dir)
+
+
+def _is_archive_path(path: str) -> bool:
+    return path.endswith(ARCHIVE_SUFFIXES)
+
+
+def _numeric_tokens(path: str) -> set[int]:
+    tokens: set[int] = set()
+    for raw in re.findall(r"\d+", path):
+        try:
+            tokens.add(int(raw))
+        except ValueError:
+            pass
+    return tokens
+
+
+def _archive_matches_subset(path: str, subset_idx: int) -> bool:
+    subset_padded = f"{subset_idx:03d}"
+    subset_patterns = (
+        f"subset_{subset_padded}",
+        f"subset-{subset_padded}",
+        f"subset_{subset_idx}",
+        f"subset-{subset_idx}",
+        f"checkpoint_{subset_padded}",
+        f"checkpoint-{subset_padded}",
+        f"checkpoint_{subset_idx}",
+        f"checkpoint-{subset_idx}",
+        f"ckpt_{subset_padded}",
+        f"ckpt-{subset_padded}",
+        f"ckpt_{subset_idx}",
+        f"ckpt-{subset_idx}",
+    )
+    lowered = path.lower()
+    if any(pattern in lowered for pattern in subset_patterns):
+        return True
+    return subset_idx in _numeric_tokens(path)
 
 
 def _download_from_hf(
@@ -79,24 +135,31 @@ def _download_from_hf(
             f"{detail}"
         )
 
+    archive_files = [path for path in files if _is_archive_path(path)]
     candidates = [
         path
-        for path in files
-        if subset_name in path and path.endswith(ARCHIVE_SUFFIXES)
+        for path in archive_files
+        if _archive_matches_subset(path, subset_idx)
     ]
     if not candidates:
-        loose = [
-            path
-            for path in files
-            if f"{subset_idx:03d}" in path and path.endswith(ARCHIVE_SUFFIXES)
-        ]
-        candidates = loose
-    if not candidates:
+        preview = "\n".join(f"- {path}" for path in sorted(archive_files)[:50])
+        if len(archive_files) > 50:
+            preview += f"\n... and {len(archive_files) - 50} more"
+        if not preview:
+            preview = "(no .tar/.tgz/.zip archive files found)"
         raise RuntimeError(
-            f"no archive found for {subset_name} in {resolved_repo_type} repo {repo_id}@{revision}"
+            f"no archive found for {subset_name} in {resolved_repo_type} repo "
+            f"{repo_id}@{revision}. Archive candidates:\n{preview}"
         )
 
-    preferred = sorted(candidates, key=lambda path: ("/archives/" not in path, len(path), path))[0]
+    preferred = sorted(
+        candidates,
+        key=lambda path: ("/archive" not in path.lower(), len(path), path),
+    )[0]
+    print(
+        f"[reeval] using archive for {subset_name}: {preferred}",
+        file=sys.stderr,
+    )
     local_path = hf_hub_download(
         repo_id=repo_id,
         repo_type=resolved_repo_type,
@@ -208,15 +271,15 @@ def main(argv: list[str] | None = None) -> int:
             )
             if extract_root.exists():
                 shutil.rmtree(extract_root)
-            _safe_extract_tar(archive_path, extract_root)
+            _safe_extract_archive(archive_path, extract_root)
         else:
             archives = sorted((download_dir).rglob(f"*{subset_name}*"))
-            archives = [p for p in archives if p.name.endswith(ARCHIVE_SUFFIXES)]
+            archives = [p for p in archives if _is_archive_path(p.name)]
             if not archives:
                 raise RuntimeError(f"--skip-download set but no local archive found for {subset_name}")
             archive_path = archives[0]
             if not extract_root.exists():
-                _safe_extract_tar(archive_path, extract_root)
+                _safe_extract_archive(archive_path, extract_root)
 
         restored_subset = _find_subset_root(extract_root, subset_idx)
         target_subset = run_root / "subsets" / subset_name

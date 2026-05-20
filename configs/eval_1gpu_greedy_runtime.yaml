@@ -24,6 +24,34 @@
   "model": {
     "tensor_parallel_size": 1
   },
+  "training": {
+    "runtime": {
+      "subprocess": {
+        "collapse_command": [
+          "torchrun",
+          "--nproc_per_node=1",
+          "-m",
+          "scp_stage4.pipeline.workers.training_worker"
+        ],
+        "unload_command": [
+          "torchrun",
+          "--nproc_per_node=1",
+          "-m",
+          "scp_stage4.pipeline.workers.training_worker"
+        ],
+        "update_command": [
+          "torchrun",
+          "--nproc_per_node=1",
+          "-m",
+          "scp_stage4.pipeline.workers.training_worker"
+        ]
+      }
+    },
+    "checkpoint": {
+      "keep_last_n": 1,
+      "keep_best_n": 0
+    }
+  },
   "run": {
     "run_id": "greedy_reeval_main_001"
   }

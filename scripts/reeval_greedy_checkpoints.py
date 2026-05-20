@@ -290,6 +290,8 @@ def _download_from_hf(
 
 def _find_subset_root(extract_root: Path, subset_idx: int) -> Path:
     subset_name = f"subset_{subset_idx:03d}"
+    if extract_root.name == subset_name and extract_root.is_dir():
+        return extract_root
     direct = extract_root / subset_name
     if direct.exists():
         return direct

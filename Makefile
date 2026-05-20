@@ -29,6 +29,14 @@ HF_CHECKPOINT_REVISION ?= main
 REEVAL_CONFIG ?= configs/scp_stage4_real_1gpu_greedy_eval.yaml
 REEVAL_RUN_ID ?= greedy_reeval_main_001
 REEVAL_CHECKPOINT_INDICES ?= 17 19 31 32
+REPLAY_REPO ?= alwaysgood/scp-stage4-run-main-001
+REPLAY_REPO_TYPE ?= dataset
+REPLAY_REVISION ?= main
+REPLAY_CONFIG ?= configs/scp_stage4_real_1gpu_greedy_eval.yaml
+REPLAY_RUN_ID ?= replay_main_001_greedy
+REPLAY_START_SUBSET ?= 0
+REPLAY_END_SUBSET ?= 32
+REPLAY_EXTRA_ARGS ?=
 TRANSLATE_CHECKPOINT ?=
 TRANSLATE_TEXT ?=
 TRANSLATE_INPUT_FILE ?=
@@ -56,7 +64,7 @@ FLASH_ATTN_WHL ?= flash_attn-2.8.3-cp310-cp310-linux_x86_64.whl
 .PHONY: set set-real-env validate-config validate-jsonl validate-local test-local smoke-local \
 	validate-remote-env smoke-remote-qe smoke-remote-model smoke-remote-api dry-run-remote-subset \
 	validate-real-config run-subset-real run-stage-real run-subset-real-from-prepared run-stage-real-from-prepared \
-	prepare-data run-subset run-stage eval eval-ood reeval-greedy-checkpoints translate-checkpoint data-source-ratio \
+	prepare-data run-subset run-stage eval eval-ood reeval-greedy-checkpoints replay-saved-updates translate-checkpoint data-source-ratio \
 	infer-q1 train-collapse-lora infer-q2 score unload-collapse-lora call-api update-base \
 	pack-prepared-data upload-prepared-data download-prepared-data verify-cuda-kernels
 
@@ -329,6 +337,24 @@ reeval-greedy-checkpoints:
 		--config $(REEVAL_CONFIG) \
 		--run-id $(REEVAL_RUN_ID) \
 		--checkpoint-indices $(REEVAL_CHECKPOINT_INDICES) \
+		$(OVERRIDES)
+
+# Target: replay-saved-updates
+# required config keys: training.base_update.*, training.runtime.subprocess.update_command, inference.eval.*, pipeline.eval_after_subset.*
+# input artifacts: saved subset api.jsonl + clean_base.json from HF run repo
+# output artifacts: artifacts/runs/$(REPLAY_RUN_ID)/subsets/subset_*/train_final/checkpoint_state.json and eval/ood_test/*.json/jsonl
+# runtime: remote GPU training + greedy inference + QE subprocess; network required for HF restore unless --skip-download
+# exit behavior: 0 after every requested subset update+eval succeeds; non-zero on restore/train/eval failure
+replay-saved-updates:
+	@PYTHONPATH=$(PYTHONPATH) $(PY) scripts/replay_saved_updates.py \
+		--repo-id $(REPLAY_REPO) \
+		--repo-type $(REPLAY_REPO_TYPE) \
+		--revision $(REPLAY_REVISION) \
+		--config $(REPLAY_CONFIG) \
+		--run-id $(REPLAY_RUN_ID) \
+		--start-subset $(REPLAY_START_SUBSET) \
+		--end-subset $(REPLAY_END_SUBSET) \
+		$(REPLAY_EXTRA_ARGS) \
 		$(OVERRIDES)
 
 # Target: translate-checkpoint

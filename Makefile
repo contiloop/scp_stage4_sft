@@ -23,6 +23,12 @@ HF_DATASET_TAG_EXIST_OK ?= 0
 HF_DATASET_PRIVATE ?= 0
 HF_CREATE_REPO ?= 1
 HF_COMMIT_MESSAGE ?=
+HF_CHECKPOINT_REPO ?= alwaysgood/scp-stage4-run-main-001
+HF_CHECKPOINT_REPO_TYPE ?= model
+HF_CHECKPOINT_REVISION ?= main
+REEVAL_CONFIG ?= configs/scp_stage4_real_1gpu_greedy_eval.yaml
+REEVAL_RUN_ID ?= greedy_reeval_main_001
+REEVAL_CHECKPOINT_INDICES ?= 17 19 31 32
 SKIP_CAUSAL_CONV1D ?= 0
 TORCH_INDEX_URL ?= https://download.pytorch.org/whl/cu128
 PIN_TORCH_VERSION ?= 2.10.0
@@ -46,7 +52,7 @@ FLASH_ATTN_WHL ?= flash_attn-2.8.3-cp310-cp310-linux_x86_64.whl
 .PHONY: set set-real-env validate-config validate-jsonl validate-local test-local smoke-local \
 	validate-remote-env smoke-remote-qe smoke-remote-model smoke-remote-api dry-run-remote-subset \
 	validate-real-config run-subset-real run-stage-real run-subset-real-from-prepared run-stage-real-from-prepared \
-	prepare-data run-subset run-stage eval eval-ood data-source-ratio \
+	prepare-data run-subset run-stage eval eval-ood reeval-greedy-checkpoints data-source-ratio \
 	infer-q1 train-collapse-lora infer-q2 score unload-collapse-lora call-api update-base \
 	pack-prepared-data upload-prepared-data download-prepared-data verify-cuda-kernels
 
@@ -304,6 +310,22 @@ eval: prepare-data
 # runtime: inference + QE subprocess/mock backends per config
 # exit behavior: 0 on successful reference-based eval; non-zero on runtime/contract failure
 eval-ood: eval
+
+# Target: reeval-greedy-checkpoints
+# required config keys: inference.eval.*, pipeline.eval_after_subset.*, qe.*
+# input artifacts: HF checkpoint subset archives (default alwaysgood/scp-stage4-run-main-001, subsets 17/19/31/32)
+# output artifacts: artifacts/runs/$(RUN_ID)/eval/ood_test/subset_*.{rows,summary}.jsonl/json
+# runtime: remote GPU inference + QE subprocess; network required for HF archive download
+# exit behavior: 0 after every requested checkpoint eval succeeds; non-zero on download/extract/eval failure
+reeval-greedy-checkpoints:
+	@PYTHONPATH=$(PYTHONPATH) $(PY) scripts/reeval_greedy_checkpoints.py \
+		--repo-id $(HF_CHECKPOINT_REPO) \
+		--repo-type $(HF_CHECKPOINT_REPO_TYPE) \
+		--revision $(HF_CHECKPOINT_REVISION) \
+		--config $(REEVAL_CONFIG) \
+		--run-id $(REEVAL_RUN_ID) \
+		--checkpoint-indices $(REEVAL_CHECKPOINT_INDICES) \
+		$(OVERRIDES)
 
 # Target: data-source-ratio
 # required config keys: none

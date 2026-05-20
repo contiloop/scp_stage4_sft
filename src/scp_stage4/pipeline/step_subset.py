@@ -3229,7 +3229,7 @@ def _generate_ood_mt_rows(
                 "source": row["source"],
                 "metadata": row.get("metadata", {}),
                 "base_checkpoint": base_checkpoint,
-                "decoding": _get_by_dotpath(ctx.cfg, "inference.q1", {}),
+                "decoding": _get_by_dotpath(ctx.cfg, "inference.eval", {}),
                 "runtime_config": {
                     "model": _get_by_dotpath(ctx.cfg, "model", {}),
                     "inference": _get_by_dotpath(ctx.cfg, "inference", {}),

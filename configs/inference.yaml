@@ -29,6 +29,13 @@
       "max_new_tokens": 2048,
       "on_truncation": "discard"
     },
+    "eval": {
+      "do_sample": false,
+      "temperature": 0.0,
+      "top_p": null,
+      "max_new_tokens": 2048,
+      "on_truncation": "discard"
+    },
     "throughput": {
       "batching": {
         "strategy": "token_budget",

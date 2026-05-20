@@ -87,6 +87,15 @@ class ConfigValidationTests(unittest.TestCase):
         cfg = compose_config("configs/scp_stage4_real.yaml")
         validate_config(cfg)
 
+    def test_real_1gpu_greedy_eval_profile_config_is_valid(self) -> None:
+        cfg = compose_config("configs/scp_stage4_real_1gpu_greedy_eval.yaml")
+        validate_config(cfg)
+        self.assertFalse(cfg["inference"]["runtime"]["multi_gpu"]["enabled"])
+        self.assertEqual(cfg["inference"]["runtime"]["multi_gpu"]["gpu_ids"], [0])
+        self.assertFalse(cfg["qe"]["multi_gpu"]["enabled"])
+        self.assertEqual(cfg["inference"]["eval"]["do_sample"], False)
+        self.assertEqual(cfg["inference"]["eval"]["temperature"], 0.0)
+
     def test_real_profile_defaults_to_hf_data_runtime(self) -> None:
         cfg = compose_config("configs/scp_stage4_real.yaml")
         self.assertEqual(cfg["data"]["runtime"]["mode"], "hf")

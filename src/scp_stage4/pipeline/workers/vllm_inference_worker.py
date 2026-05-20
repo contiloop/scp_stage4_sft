@@ -91,9 +91,7 @@ def _resolve_model_name(request: Mapping[str, Any]) -> str:
         if not checkpoint_path.exists():
             raise WorkerContractError(f"base_checkpoint path not found: {checkpoint_path}")
         if _is_lora_adapter_path(checkpoint_path):
-            raise WorkerContractError(
-                f"base_checkpoint points to a LoRA adapter, not a full-weight checkpoint: {checkpoint_path}"
-            )
+            return name
         if not _is_model_checkpoint_path(checkpoint_path):
             raise WorkerContractError(
                 f"base_checkpoint is not a full-weight checkpoint: {checkpoint_path}"

@@ -1,0 +1,30 @@
+{
+  "inference": {
+    "runtime": {
+      "multi_gpu": {
+        "enabled": false,
+        "gpu_ids": [0],
+        "shard_strategy": "order_split"
+      }
+    },
+    "eval": {
+      "do_sample": false,
+      "temperature": 0.0,
+      "top_p": null,
+      "max_new_tokens": 2048,
+      "on_truncation": "discard"
+    }
+  },
+  "qe": {
+    "multi_gpu": {
+      "enabled": false,
+      "gpu_ids": [0]
+    }
+  },
+  "model": {
+    "tensor_parallel_size": 1
+  },
+  "run": {
+    "run_id": "greedy_reeval_main_001"
+  }
+}

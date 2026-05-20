@@ -1,0 +1,22 @@
+{
+  "defaults": [
+    "model",
+    "data",
+    "data_real_runtime",
+    "inference",
+    "pipeline",
+    "training",
+    "qe",
+    "external_api",
+    "logging",
+    "prompts",
+    "run",
+    "inference_vllm_runtime",
+    "qe_real_runtime",
+    "external_api_real_runtime",
+    "training_real_runtime",
+    "run_real",
+    "eval_1gpu_greedy_runtime"
+  ],
+  "version": 1
+}

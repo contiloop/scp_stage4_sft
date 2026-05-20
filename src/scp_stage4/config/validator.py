@@ -376,8 +376,10 @@ def validate_config(cfg: dict[str, Any]) -> None:
 
     q1 = _as_dict(inference.get("q1", {}), "inference.q1", errors)
     q2 = _as_dict(inference.get("q2", {}), "inference.q2", errors)
+    eval_inference = _as_dict(inference.get("eval", {}), "inference.eval", errors)
     _require_number(q1, "max_new_tokens", errors)
     _require_number(q2, "max_new_tokens", errors)
+    _require_number(eval_inference, "max_new_tokens", errors)
     inference_runtime = _as_dict(inference.get("runtime", {}), "inference.runtime", errors)
     unsloth_runtime = _as_dict(
         inference_runtime.get("unsloth", {}),

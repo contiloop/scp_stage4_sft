@@ -274,6 +274,40 @@ def test_run_eval_ood_writes_metricx_bleu_chrf_artifacts() -> None:
         _cleanup(run_id)
 
 
+def test_run_eval_ood_uses_eval_decoding_not_q1_sampling() -> None:
+    run_id = "test_step_subset_eval_ood_greedy_decoding"
+    _cleanup(run_id)
+    try:
+        run_prepare_data(config_path="configs/scp_stage4.yaml")
+        inference_cmd = json.dumps(
+            [sys.executable, "-m", "scp_stage4.pipeline.workers.mock_inference_worker"]
+        )
+        run_eval_ood(
+            config_path="configs/scp_stage4.yaml",
+            run_id_override=run_id,
+            subset_idx=0,
+            overrides=[
+                "inference.runtime.mode=subprocess",
+                f"inference.runtime.subprocess.command={inference_cmd}",
+                "inference.q1.do_sample=true",
+                "inference.q1.temperature=1.1",
+                "inference.eval.do_sample=false",
+                "inference.eval.temperature=0.0",
+                "inference.eval.top_p=null",
+            ],
+        )
+        request_rows = read_jsonl(
+            _subset_root(run_id) / "runtime_io" / "infer-ood.input.jsonl"
+        )
+        assert request_rows
+        decoding = request_rows[0]["decoding"]
+        assert decoding["do_sample"] is False
+        assert decoding["temperature"] == 0.0
+        assert decoding["top_p"] is None
+    finally:
+        _cleanup(run_id)
+
+
 def test_step_entrypoints_run_in_sequence_and_update_base_filters_non_ok() -> None:
     run_id = "test_step_subset_sequence"
     _cleanup(run_id)

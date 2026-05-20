@@ -47,6 +47,12 @@
         ]
       }
     },
+    "base_update": {
+      "batching": {
+        "per_device_train_batch_size": 4,
+        "gradient_accumulation_steps": 32
+      }
+    },
     "checkpoint": {
       "keep_last_n": 1,
       "keep_best_n": 0

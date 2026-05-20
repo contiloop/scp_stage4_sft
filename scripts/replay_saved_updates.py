@@ -40,6 +40,7 @@ def _restore_subset_artifacts(
     download_dir: Path,
     run_root: Path,
     skip_download: bool,
+    keep_download_payload: bool,
 ) -> Path:
     subset_name = _subset_name(subset_idx)
     extract_root = download_dir / "replay_extracted" / subset_name
@@ -77,7 +78,13 @@ def _restore_subset_artifacts(
     if target_subset.exists():
         shutil.rmtree(target_subset)
     target_subset.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copytree(source_subset, target_subset)
+    target_subset.mkdir(parents=True, exist_ok=True)
+    for name in REQUIRED_REPLAY_FILES:
+        shutil.copy2(source_subset / name, target_subset / name)
+    for optional_name in ("selected.jsonl", "api_requests.jsonl"):
+        optional_path = source_subset / optional_name
+        if optional_path.exists():
+            shutil.copy2(optional_path, target_subset / optional_name)
 
     missing = [name for name in REQUIRED_REPLAY_FILES if not (target_subset / name).exists()]
     if missing:
@@ -85,6 +92,15 @@ def _restore_subset_artifacts(
             f"{subset_name} missing replay artifacts after restore: {', '.join(missing)} "
             f"(source={payload.source})"
         )
+
+    if not keep_download_payload and not skip_download:
+        if payload.kind == "archive" and payload.path.exists():
+            payload.path.unlink()
+        if extract_root.exists():
+            shutil.rmtree(extract_root)
+        snapshot_root = download_dir / "snapshots" / subset_name
+        if snapshot_root.exists():
+            shutil.rmtree(snapshot_root)
     return target_subset
 
 
@@ -165,6 +181,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--run-root", default=None)
     parser.add_argument("--clean-run", action="store_true")
     parser.add_argument("--clean-download-cache", action="store_true")
+    parser.add_argument("--keep-download-payload", action="store_true")
     parser.add_argument("--skip-download", action="store_true")
     args, overrides = parser.parse_known_args(argv)
 
@@ -210,6 +227,7 @@ def main(argv: list[str] | None = None) -> int:
             download_dir=download_dir,
             run_root=run_root,
             skip_download=bool(args.skip_download),
+            keep_download_payload=bool(args.keep_download_payload),
         )
 
         _run(

@@ -38,6 +38,7 @@ REPLAY_START_SUBSET ?= 0
 REPLAY_END_SUBSET ?= 32
 REPLAY_EXTRA_ARGS ?=
 TRANSLATE_CHECKPOINT ?=
+TRANSLATE_BASE_MODEL_ONLY ?= 0
 TRANSLATE_TEXT ?=
 TRANSLATE_INPUT_FILE ?=
 TRANSLATE_OUTPUT ?=
@@ -359,15 +360,18 @@ replay-saved-updates:
 
 # Target: translate-checkpoint
 # required config keys: model.*, inference.eval.*, prompts.*
-# input artifacts: local checkpoint path in TRANSLATE_CHECKPOINT and text via TRANSLATE_TEXT or TRANSLATE_INPUT_FILE
+# input artifacts: local checkpoint path in TRANSLATE_CHECKPOINT, unless TRANSLATE_BASE_MODEL_ONLY=1, and text via TRANSLATE_TEXT or TRANSLATE_INPUT_FILE
 # output artifacts: optional TRANSLATE_OUTPUT JSONL; translation is printed to stdout
 # runtime: remote GPU inference through vLLM subprocess
 # exit behavior: 0 after one translation succeeds; non-zero on missing checkpoint or inference failure
 translate-checkpoint:
-	@test -n "$(TRANSLATE_CHECKPOINT)" || (echo "TRANSLATE_CHECKPOINT is required" >&2; exit 2)
+	@if [ "$(TRANSLATE_BASE_MODEL_ONLY)" != "1" ]; then \
+		test -n "$(TRANSLATE_CHECKPOINT)" || (echo "TRANSLATE_CHECKPOINT is required unless TRANSLATE_BASE_MODEL_ONLY=1" >&2; exit 2); \
+	fi
 	@PYTHONPATH=$(PYTHONPATH) $(PY) scripts/translate_with_checkpoint.py \
-		--checkpoint "$(TRANSLATE_CHECKPOINT)" \
 		--config "$(REEVAL_CONFIG)" \
+		$(if $(strip $(TRANSLATE_CHECKPOINT)),--checkpoint "$(TRANSLATE_CHECKPOINT)",) \
+		$(if $(filter 1,$(TRANSLATE_BASE_MODEL_ONLY)),--base-model-only,) \
 		$(if $(strip $(TRANSLATE_TEXT)),--text "$(TRANSLATE_TEXT)",) \
 		$(if $(strip $(TRANSLATE_INPUT_FILE)),--input-file "$(TRANSLATE_INPUT_FILE)",) \
 		$(if $(strip $(TRANSLATE_OUTPUT)),--output "$(TRANSLATE_OUTPUT)",) \

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Translate ad hoc English text with a local SCP checkpoint."""
+"""Translate ad hoc English text with a local SCP checkpoint or base model."""
 
 from __future__ import annotations
 
@@ -51,7 +51,8 @@ def _build_decoding(cfg: dict[str, Any], args: argparse.Namespace) -> dict[str, 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--checkpoint", required=True, help="Local full-weight checkpoint or LoRA adapter path")
+    parser.add_argument("--checkpoint", default=None, help="Local full-weight checkpoint or LoRA adapter path")
+    parser.add_argument("--base-model-only", action="store_true", help="Load config model.name without a checkpoint")
     parser.add_argument("--config", default="configs/scp_stage4_real_1gpu_greedy_eval.yaml")
     parser.add_argument("--text", default=None)
     parser.add_argument("--input-file", default=None)
@@ -63,9 +64,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--run-id", default="manual_translate")
     args, overrides = parser.parse_known_args(argv)
 
-    checkpoint = Path(args.checkpoint)
-    if not checkpoint.exists():
-        raise SystemExit(f"checkpoint path not found: {checkpoint}")
+    checkpoint: Path | None = None
+    if args.checkpoint:
+        checkpoint = Path(args.checkpoint)
+        if not checkpoint.exists():
+            raise SystemExit(f"checkpoint path not found: {checkpoint}")
+    elif not args.base_model_only:
+        raise SystemExit("provide --checkpoint or --base-model-only")
 
     source = _load_text(args).strip()
     if not source:
@@ -81,7 +86,6 @@ def main(argv: list[str] | None = None) -> int:
         "q_tag": "ood",
         "source": source,
         "metadata": {},
-        "base_checkpoint": str(checkpoint),
         "decoding": _build_decoding(cfg, args),
         "runtime_config": {
             "model": _get_by_dotpath(cfg, "model", {}),
@@ -90,6 +94,8 @@ def main(argv: list[str] | None = None) -> int:
             "prompts": _get_by_dotpath(cfg, "prompts", {}),
         },
     }
+    if checkpoint is not None:
+        request["base_checkpoint"] = str(checkpoint)
 
     with tempfile.TemporaryDirectory(prefix="scp_translate_") as tmp:
         tmp_dir = Path(tmp)
@@ -123,7 +129,9 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit(f"translation failed: {row.get('error')}")
 
     result = {
-        "checkpoint": str(checkpoint),
+        "checkpoint": str(checkpoint) if checkpoint is not None else None,
+        "model": str(_get_by_dotpath(cfg, "model.name", "")),
+        "base_model_only": checkpoint is None,
         "source": source,
         "translation": str(row.get("mt", "")),
     }

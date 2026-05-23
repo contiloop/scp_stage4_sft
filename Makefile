@@ -29,6 +29,12 @@ HF_CHECKPOINT_REVISION ?= main
 REEVAL_CONFIG ?= configs/scp_stage4_real_1gpu_greedy_eval.yaml
 REEVAL_RUN_ID ?= greedy_reeval_main_001
 REEVAL_CHECKPOINT_INDICES ?= 17 19 31 32
+TEMP_SWEEP_CONFIG ?= configs/scp_stage4_real_1gpu_greedy_eval.yaml
+TEMP_SWEEP_RUN_PREFIX ?= temp_sweep_eval
+TEMP_SWEEP_MODELS ?= qwen35_it 017 032 034
+TEMP_SWEEP_TEMPERATURES ?= 0.0 0.3 0.7 1.1
+TEMP_SWEEP_TOP_P ?= 0.95
+TEMP_SWEEP_EXTRA_ARGS ?=
 REPLAY_REPO ?= alwaysgood/scp-stage4-run-main-001
 REPLAY_REPO_TYPE ?= dataset
 REPLAY_REVISION ?= main
@@ -65,7 +71,7 @@ FLASH_ATTN_WHL ?= flash_attn-2.8.3-cp310-cp310-linux_x86_64.whl
 .PHONY: set set-real-env validate-config validate-jsonl validate-local test-local smoke-local \
 	validate-remote-env smoke-remote-qe smoke-remote-model smoke-remote-api dry-run-remote-subset \
 	validate-real-config run-subset-real run-stage-real run-subset-real-from-prepared run-stage-real-from-prepared \
-	prepare-data run-subset run-stage eval eval-ood reeval-greedy-checkpoints replay-saved-updates translate-checkpoint data-source-ratio \
+	prepare-data run-subset run-stage eval eval-ood reeval-greedy-checkpoints eval-temperature-sweep replay-saved-updates translate-checkpoint data-source-ratio \
 	infer-q1 train-collapse-lora infer-q2 score unload-collapse-lora call-api update-base \
 	pack-prepared-data upload-prepared-data download-prepared-data verify-cuda-kernels
 
@@ -338,6 +344,22 @@ reeval-greedy-checkpoints:
 		--config $(REEVAL_CONFIG) \
 		--run-id $(REEVAL_RUN_ID) \
 		--checkpoint-indices $(REEVAL_CHECKPOINT_INDICES) \
+		$(OVERRIDES)
+
+# Target: eval-temperature-sweep
+# required config keys: inference.eval.*, pipeline.eval_after_subset.*, qe.*
+# input artifacts: artifacts/data/ood_test.jsonl plus local checkpoint dirs for requested checkpoint models
+# output artifacts: artifacts/runs/$(TEMP_SWEEP_RUN_PREFIX)_*/eval/ood_test/subset_*.{rows,summary}.jsonl/json and artifacts/runs/$(TEMP_SWEEP_RUN_PREFIX)_index.jsonl
+# runtime: remote GPU inference + QE subprocess; no training/API calls
+# exit behavior: 0 after every model/temperature eval succeeds; non-zero on missing checkpoint or eval failure
+eval-temperature-sweep:
+	@PYTHONPATH=$(PYTHONPATH) $(PY) scripts/eval_temperature_sweep.py \
+		--config $(TEMP_SWEEP_CONFIG) \
+		--run-prefix $(TEMP_SWEEP_RUN_PREFIX) \
+		--models $(TEMP_SWEEP_MODELS) \
+		--temperatures $(TEMP_SWEEP_TEMPERATURES) \
+		--top-p $(TEMP_SWEEP_TOP_P) \
+		$(TEMP_SWEEP_EXTRA_ARGS) \
 		$(OVERRIDES)
 
 # Target: replay-saved-updates

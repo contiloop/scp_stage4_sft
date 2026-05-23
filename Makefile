@@ -34,6 +34,7 @@ TEMP_SWEEP_RUN_PREFIX ?= temp_sweep_eval
 TEMP_SWEEP_MODELS ?= qwen35_it 017 032 034
 TEMP_SWEEP_TEMPERATURES ?= 0.0 0.3 0.7 1.1
 TEMP_SWEEP_TOP_P ?= 0.95
+TEMP_SWEEP_DOWNLOAD_DIR ?= artifacts/hf_downloads/temp_sweep
 TEMP_SWEEP_EXTRA_ARGS ?=
 REPLAY_REPO ?= alwaysgood/scp-stage4-run-main-001
 REPLAY_REPO_TYPE ?= dataset
@@ -348,9 +349,9 @@ reeval-greedy-checkpoints:
 
 # Target: eval-temperature-sweep
 # required config keys: inference.eval.*, pipeline.eval_after_subset.*, qe.*
-# input artifacts: artifacts/data/ood_test.jsonl plus local checkpoint dirs for requested checkpoint models
+# input artifacts: artifacts/data/ood_test.jsonl plus local checkpoint dirs for requested checkpoint models, or HF access with --restore-missing
 # output artifacts: artifacts/runs/$(TEMP_SWEEP_RUN_PREFIX)_*/eval/ood_test/subset_*.{rows,summary}.jsonl/json and artifacts/runs/$(TEMP_SWEEP_RUN_PREFIX)_index.jsonl
-# runtime: remote GPU inference + QE subprocess; no training/API calls
+# runtime: remote GPU inference + QE subprocess; optional network checkpoint restore; no training/API calls
 # exit behavior: 0 after every model/temperature eval succeeds; non-zero on missing checkpoint or eval failure
 eval-temperature-sweep:
 	@PYTHONPATH=$(PYTHONPATH) $(PY) scripts/eval_temperature_sweep.py \
@@ -359,6 +360,7 @@ eval-temperature-sweep:
 		--models $(TEMP_SWEEP_MODELS) \
 		--temperatures $(TEMP_SWEEP_TEMPERATURES) \
 		--top-p $(TEMP_SWEEP_TOP_P) \
+		--download-dir $(TEMP_SWEEP_DOWNLOAD_DIR) \
 		$(TEMP_SWEEP_EXTRA_ARGS) \
 		$(OVERRIDES)
 

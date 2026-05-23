@@ -11,12 +11,22 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+from reeval_greedy_checkpoints import (
+    _copy_tree_payload_to_subset,
+    _download_from_hf,
+    _resolve_checkpoint_path,
+    _safe_extract_archive,
+)
+
 
 @dataclass(frozen=True)
 class EvalModel:
     name: str
     subset_idx: int
     checkpoint: Path | None
+    restore_repo_id: str | None = None
+    restore_repo_type: str = "dataset"
+    restore_revision: str = "main"
 
 
 DEFAULT_MODELS = {
@@ -25,11 +35,13 @@ DEFAULT_MODELS = {
         "subset_017",
         17,
         Path("artifacts/runs/greedy_reeval_main_001/subsets/subset_017/train_final/full_weight_model"),
+        "alwaysgood/scp-stage4-run-main-001",
     ),
     "032": EvalModel(
         "subset_032",
         32,
         Path("artifacts/runs/greedy_reeval_main_001/subsets/subset_032/train_final/full_weight_model"),
+        "alwaysgood/scp-stage4-run-main-001",
     ),
     "034": EvalModel(
         "subset_034",
@@ -38,6 +50,7 @@ DEFAULT_MODELS = {
             "artifacts/runs/greedy_reeval_from032_absrel_no_claude/"
             "subsets/subset_034/train_final/full_weight_model"
         ),
+        "alwaysgood/scp-stage4-run-main-001-from032-absrel-no-claude",
     ),
 }
 
@@ -118,6 +131,74 @@ def _parse_models(raw_models: list[str]) -> list[EvalModel]:
     return models
 
 
+def _target_subset_from_checkpoint(checkpoint: Path, subset_idx: int) -> Path:
+    subset_name = f"subset_{subset_idx:03d}"
+    for parent in checkpoint.parents:
+        if parent.name == subset_name:
+            return parent
+    raise SystemExit(f"cannot infer subset root from checkpoint path: {checkpoint}")
+
+
+def _restore_model_checkpoint(
+    *,
+    model: EvalModel,
+    download_dir: Path,
+) -> EvalModel:
+    if model.checkpoint is None or model.restore_repo_id is None:
+        return model
+    if model.checkpoint.exists():
+        return model
+
+    subset_name = f"subset_{model.subset_idx:03d}"
+    print(
+        f"[temp-sweep] restoring missing {model.name} checkpoint "
+        f"from {model.restore_repo_id}@{model.restore_revision}",
+        flush=True,
+    )
+    payload = _download_from_hf(
+        repo_id=model.restore_repo_id,
+        repo_type=model.restore_repo_type,
+        revision=model.restore_revision,
+        subset_idx=model.subset_idx,
+        download_dir=download_dir,
+    )
+    if payload.kind == "archive":
+        extract_root = download_dir / "temp_sweep_extracted" / subset_name
+        if extract_root.exists():
+            shutil.rmtree(extract_root)
+        _safe_extract_archive(payload.path, extract_root)
+        payload_root = extract_root
+    else:
+        payload_root = payload.path
+
+    target_subset = _target_subset_from_checkpoint(model.checkpoint, model.subset_idx)
+    _copy_tree_payload_to_subset(
+        payload_root=payload_root,
+        target_subset=target_subset,
+        subset_idx=model.subset_idx,
+    )
+    restored_checkpoint = _resolve_checkpoint_path(target_subset)
+    return EvalModel(
+        name=model.name,
+        subset_idx=model.subset_idx,
+        checkpoint=restored_checkpoint,
+        restore_repo_id=model.restore_repo_id,
+        restore_repo_type=model.restore_repo_type,
+        restore_revision=model.restore_revision,
+    )
+
+
+def _restore_missing_models(
+    *,
+    models: list[EvalModel],
+    download_dir: Path,
+) -> list[EvalModel]:
+    return [
+        _restore_model_checkpoint(model=model, download_dir=download_dir)
+        for model in models
+    ]
+
+
 def _validate_model_paths(models: list[EvalModel]) -> None:
     missing = [
         str(model.checkpoint)
@@ -127,7 +208,8 @@ def _validate_model_paths(models: list[EvalModel]) -> None:
     if missing:
         joined = "\n".join(f"- {path}" for path in missing)
         raise SystemExit(
-            "missing checkpoint path(s). Run the greedy re-eval restore first or pass a custom model spec:\n"
+            "missing checkpoint path(s). Run with --restore-missing, run the greedy re-eval restore first, "
+            "or pass a custom model spec:\n"
             f"{joined}"
         )
 
@@ -140,11 +222,18 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--temperatures", nargs="+", type=float, default=[0.0, 0.3, 0.7, 1.1])
     parser.add_argument("--top-p", type=float, default=0.95)
     parser.add_argument("--run-root-base", default="artifacts/runs")
+    parser.add_argument("--download-dir", default="artifacts/hf_downloads/temp_sweep")
+    parser.add_argument("--restore-missing", action="store_true", help="Download and restore known missing checkpoint models")
     parser.add_argument("--clean", action="store_true", help="Remove each sweep run directory before eval")
     parser.add_argument("--skip-existing", action="store_true", help="Skip when the summary artifact already exists")
     args, overrides = parser.parse_known_args(argv)
 
     models = _parse_models(args.models)
+    if args.restore_missing:
+        models = _restore_missing_models(
+            models=models,
+            download_dir=Path(args.download_dir),
+        )
     _validate_model_paths(models)
 
     index_rows: list[dict[str, object]] = []
